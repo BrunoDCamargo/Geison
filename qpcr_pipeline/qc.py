@@ -27,12 +27,14 @@ class QCResult:
 
 
 _VALID_NUCLEOTIDES = frozenset("ACGTRYSWKMBDHVN")
+_UNAMBIGUOUS_NUCLEOTIDES = frozenset("ACGT")
 
 
 def evaluate_sequences(
     records: tuple[LocalSequenceRecord, ...],
     *,
     min_length: int | None = None,
+    max_ambiguous_fraction: float | None = None,
 ) -> QCResult:
     qc_records: list[QCRecord] = []
     accepted_ids: list[str] = []
@@ -59,6 +61,19 @@ def evaluate_sequences(
                 )
             )
             continue
+
+        if max_ambiguous_fraction is not None and record.sequence:
+            ambiguous_count = sum(base not in _UNAMBIGUOUS_NUCLEOTIDES for base in record.sequence)
+            ambiguous_fraction = ambiguous_count / len(record.sequence)
+            if ambiguous_fraction > max_ambiguous_fraction:
+                qc_records.append(
+                    QCRecord(
+                        sequence_id=record.sequence_id,
+                        status=QCStatus.REJECTED,
+                        reason_codes=("EXCESSIVE_AMBIGUITY",),
+                    )
+                )
+                continue
 
         qc_records.append(
             QCRecord(
