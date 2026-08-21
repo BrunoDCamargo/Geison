@@ -106,6 +106,13 @@ class FrozenDatasetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "schema_version.*unsupported"):
                 validate_frozen_dataset(tmpdir)
 
+    def test_rejects_floating_point_schema_version(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_dataset(Path(tmpdir), manifest_changes={"schema_version": 1.0})
+
+            with self.assertRaisesRegex(ValueError, "schema_version.*unsupported"):
+                validate_frozen_dataset(tmpdir)
+
     def test_rejects_missing_consolidated_records_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_dataset(Path(tmpdir), write_records=False)

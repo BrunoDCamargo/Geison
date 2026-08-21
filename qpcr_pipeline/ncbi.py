@@ -69,7 +69,11 @@ def validate_frozen_dataset(dataset_dir: str | Path) -> AcquiredNcbiDataset:
 
 def _validate_manifest_header(manifest: dict[str, object]) -> None:
     schema_version = manifest.get("schema_version")
-    if isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION:
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != SCHEMA_VERSION
+    ):
         raise ValueError(
             "NCBI dataset manifest field 'schema_version' is unsupported: "
             f"expected {SCHEMA_VERSION}."
