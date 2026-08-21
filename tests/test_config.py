@@ -23,6 +23,47 @@ class PipelineConfigTests(unittest.TestCase):
         self.assertEqual(config.target_name, "synthetic-target")
         self.assertEqual(config.input_fasta, Path("tests/fixtures/target_small.fasta"))
 
+    def test_loads_genbank_input_and_optional_qc_thresholds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(
+                "target:\n"
+                "  name: synthetic-target\n"
+                "input:\n"
+                "  genbank: tests/fixtures/target.gb\n"
+                "qc:\n"
+                "  min_length: 100\n"
+                "  max_ambiguous_fraction: 0.05\n"
+                "  expected_length: 150\n"
+                "  length_tolerance_fraction: 0.10\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        self.assertIsNone(config.input_fasta)
+        self.assertEqual(config.input_genbank, Path("tests/fixtures/target.gb"))
+        self.assertEqual(config.selected_input, (Path("tests/fixtures/target.gb"), "genbank"))
+        self.assertEqual(config.qc.min_length, 100)
+        self.assertEqual(config.qc.max_ambiguous_fraction, 0.05)
+        self.assertEqual(config.qc.expected_length, 150)
+        self.assertEqual(config.qc.length_tolerance_fraction, 0.10)
+
+    def test_requires_exactly_one_local_sequence_input(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(
+                "target:\n"
+                "  name: synthetic-target\n"
+                "input:\n"
+                "  fasta: tests/fixtures/target_small.fasta\n"
+                "  genbank: tests/fixtures/target.gb\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "Exactly one local sequence input"):
+                load_config(config_path)
+
 
 if __name__ == "__main__":
     unittest.main()
