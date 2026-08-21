@@ -72,6 +72,53 @@ class FastaQcTests(unittest.TestCase):
         self.assertEqual(result.target_sequence_set.sequence_ids, ("accepted",))
         self.assertEqual(result.evaluation_set.sequence_ids, ("accepted",))
 
+    def test_exact_duplicate_after_first_occurrence_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fasta_path = Path(tmpdir) / "target.fasta"
+            fasta_path.write_text(
+                ">first\n"
+                "ACGTACGT\n"
+                ">unique\n"
+                "ACGTACGA\n"
+                ">duplicate\n"
+                "ACGTACGT\n",
+                encoding="utf-8",
+            )
+
+            records = load_fasta(fasta_path)
+            result = evaluate_sequences(records)
+
+        self.assertEqual(result.records[0].status, QCStatus.ACCEPTED)
+        self.assertEqual(result.records[1].status, QCStatus.ACCEPTED)
+        self.assertEqual(result.records[2].status, QCStatus.REJECTED)
+        self.assertEqual(result.records[2].reason_codes, ("DUPLICATE_SEQUENCE",))
+        self.assertEqual(result.target_sequence_set.sequence_ids, ("first", "unique"))
+        self.assertEqual(result.evaluation_set.sequence_ids, ("first", "unique"))
+
+    def test_sequence_outside_expected_length_tolerance_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fasta_path = Path(tmpdir) / "target.fasta"
+            fasta_path.write_text(
+                ">expected\n"
+                "ACGTACGT\n"
+                ">length-outlier\n"
+                "ACGTACGTACGT\n",
+                encoding="utf-8",
+            )
+
+            records = load_fasta(fasta_path)
+            result = evaluate_sequences(
+                records,
+                expected_length=8,
+                length_tolerance_fraction=0.25,
+            )
+
+        self.assertEqual(result.records[0].status, QCStatus.ACCEPTED)
+        self.assertEqual(result.records[1].status, QCStatus.REJECTED)
+        self.assertEqual(result.records[1].reason_codes, ("INCONSISTENT_LENGTH",))
+        self.assertEqual(result.target_sequence_set.sequence_ids, ("expected",))
+        self.assertEqual(result.evaluation_set.sequence_ids, ("expected",))
+
 
 if __name__ == "__main__":
     unittest.main()
