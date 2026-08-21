@@ -9,9 +9,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qpcr-pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run", help="Run the qPCR pipeline")
+    run_parser = subparsers.add_parser("run", help="Run or validate the qPCR pipeline configuration")
     run_parser.add_argument("config", type=Path)
-    run_parser.add_argument("--outdir", type=Path, required=True)
+    run_parser.add_argument("--outdir", type=Path)
 
     return parser
 
@@ -21,6 +21,11 @@ def main() -> int:
 
     if args.command == "run":
         config = load_config(args.config)
+
+        if args.outdir is None:
+            print(f"Loaded configuration for target: {config.target_name}")
+            return 0
+
         summary = run_pipeline(config, args.outdir)
         print(f"{summary.status}: {summary.target_name} ({summary.sequence_count} sequences)")
         return 0
