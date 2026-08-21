@@ -52,6 +52,26 @@ class FastaQcTests(unittest.TestCase):
         self.assertEqual(result.target_sequence_set.sequence_ids, ("accepted",))
         self.assertEqual(result.evaluation_set.sequence_ids, ("accepted",))
 
+    def test_sequence_above_configured_ambiguity_fraction_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fasta_path = Path(tmpdir) / "target.fasta"
+            fasta_path.write_text(
+                ">accepted\n"
+                "ACGTACGT\n"
+                ">too-ambiguous\n"
+                "ACGTNNNN\n",
+                encoding="utf-8",
+            )
+
+            records = load_fasta(fasta_path)
+            result = evaluate_sequences(records, max_ambiguous_fraction=0.25)
+
+        self.assertEqual(result.records[0].status, QCStatus.ACCEPTED)
+        self.assertEqual(result.records[1].status, QCStatus.REJECTED)
+        self.assertEqual(result.records[1].reason_codes, ("EXCESSIVE_AMBIGUITY",))
+        self.assertEqual(result.target_sequence_set.sequence_ids, ("accepted",))
+        self.assertEqual(result.evaluation_set.sequence_ids, ("accepted",))
+
 
 if __name__ == "__main__":
     unittest.main()
