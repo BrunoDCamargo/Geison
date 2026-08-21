@@ -49,6 +49,38 @@ class PipelineConfigTests(unittest.TestCase):
         self.assertEqual(config.qc.expected_length, 150)
         self.assertEqual(config.qc.length_tolerance_fraction, 0.10)
 
+    def test_rejects_fractional_min_length(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(
+                "target:\n"
+                "  name: synthetic-target\n"
+                "input:\n"
+                "  fasta: tests/fixtures/target_small.fasta\n"
+                "qc:\n"
+                "  min_length: 100.5\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "qc.min_length.*integer"):
+                load_config(config_path)
+
+    def test_rejects_fractional_expected_length(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(
+                "target:\n"
+                "  name: synthetic-target\n"
+                "input:\n"
+                "  fasta: tests/fixtures/target_small.fasta\n"
+                "qc:\n"
+                "  expected_length: 150.5\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "qc.expected_length.*integer"):
+                load_config(config_path)
+
     def test_requires_exactly_one_local_sequence_input(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.yaml"

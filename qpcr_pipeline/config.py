@@ -53,9 +53,9 @@ def load_config(path: str | Path) -> PipelineConfig:
         input_fasta=input_fasta,
         input_genbank=input_genbank,
         qc=QCConfig(
-            min_length=_optional_number(qc_config, "min_length"),
+            min_length=_optional_integer(qc_config, "min_length"),
             max_ambiguous_fraction=_optional_number(qc_config, "max_ambiguous_fraction"),
-            expected_length=_optional_number(qc_config, "expected_length"),
+            expected_length=_optional_integer(qc_config, "expected_length"),
             length_tolerance_fraction=_optional_number(qc_config, "length_tolerance_fraction"),
         ),
     )
@@ -90,4 +90,13 @@ def _optional_number(raw: dict[str, Any], key: str) -> int | float | None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"Configuration value 'qc.{key}' must be a number.")
+    return value
+
+
+def _optional_integer(raw: dict[str, Any], key: str) -> int | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Configuration value 'qc.{key}' must be an integer.")
     return value
