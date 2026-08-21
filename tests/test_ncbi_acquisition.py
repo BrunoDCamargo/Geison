@@ -169,6 +169,27 @@ class AccessionAcquisitionTests(unittest.TestCase):
         self.assertEqual(manifest["status"], "PARTIAL")
         self.assertEqual(manifest["completed_batches"], [])
 
+    def test_initial_partial_manifest_has_independent_creation_and_update_timestamps(self):
+        accessions = ("NC_000001.11",)
+        client = FakeNcbiClient(
+            {accessions[0]: self._record(accessions[0])}, failures=(ValueError("stopped"),)
+        )
+        timestamps = iter(("created", "initialized"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(ValueError, "stopped"):
+                acquire_ncbi_dataset(
+                    self._config(accessions),
+                    Path(tmpdir),
+                    client=client,
+                    clock=lambda: next(timestamps),
+                )
+            manifest = self._read_manifest(Path(tmpdir))
+
+        self.assertEqual(manifest["status"], "PARTIAL")
+        self.assertEqual(manifest["created_at"], "created")
+        self.assertEqual(manifest["updated_at"], "initialized")
+
     def test_resumes_after_interruption_with_the_first_completed_batch_reusable(self):
         accessions = ("NC_000001.11", "AB123456.2", "XY_3.4")
         records = {accession: self._record(accession) for accession in accessions}
