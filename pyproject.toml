@@ -11,5 +11,8 @@ dependencies = [
     "PyYAML>=6.0,<7",
 ]
 
+[project.scripts]
+qpcr-pipeline = "qpcr_pipeline.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["qpcr_pipeline*"]
