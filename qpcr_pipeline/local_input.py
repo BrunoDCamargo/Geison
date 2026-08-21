@@ -14,7 +14,8 @@ class LocalSequenceRecord:
 
 def load_fasta(path: str | Path) -> tuple[LocalSequenceRecord, ...]:
     fasta_path = Path(path)
-    return tuple(
-        LocalSequenceRecord(sequence_id=record.id, sequence=str(record.seq).upper())
-        for record in SeqIO.parse(fasta_path, "fasta")
-    )
+    with fasta_path.open(encoding="utf-8") as handle:
+        return tuple(
+            LocalSequenceRecord(sequence_id=record.id, sequence=str(record.seq).upper())
+            for record in SeqIO.parse(handle, "fasta")
+        )
