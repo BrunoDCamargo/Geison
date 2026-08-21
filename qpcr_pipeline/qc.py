@@ -35,9 +35,12 @@ def evaluate_sequences(
     *,
     min_length: int | None = None,
     max_ambiguous_fraction: float | None = None,
+    expected_length: int | None = None,
+    length_tolerance_fraction: float | None = None,
 ) -> QCResult:
     qc_records: list[QCRecord] = []
     accepted_ids: list[str] = []
+    accepted_sequences: set[str] = set()
 
     for record in records:
         invalid_nucleotide = any(base not in _VALID_NUCLEOTIDES for base in record.sequence)
@@ -75,6 +78,30 @@ def evaluate_sequences(
                 )
                 continue
 
+        if expected_length is not None and length_tolerance_fraction is not None:
+            tolerance = expected_length * length_tolerance_fraction
+            lower_bound = expected_length - tolerance
+            upper_bound = expected_length + tolerance
+            if not lower_bound <= len(record.sequence) <= upper_bound:
+                qc_records.append(
+                    QCRecord(
+                        sequence_id=record.sequence_id,
+                        status=QCStatus.REJECTED,
+                        reason_codes=("INCONSISTENT_LENGTH",),
+                    )
+                )
+                continue
+
+        if record.sequence in accepted_sequences:
+            qc_records.append(
+                QCRecord(
+                    sequence_id=record.sequence_id,
+                    status=QCStatus.REJECTED,
+                    reason_codes=("DUPLICATE_SEQUENCE",),
+                )
+            )
+            continue
+
         qc_records.append(
             QCRecord(
                 sequence_id=record.sequence_id,
@@ -83,6 +110,7 @@ def evaluate_sequences(
             )
         )
         accepted_ids.append(record.sequence_id)
+        accepted_sequences.add(record.sequence)
 
     sequence_ids = tuple(accepted_ids)
     return QCResult(
