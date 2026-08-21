@@ -183,9 +183,13 @@ def _ncbi_integer(
     minimum: int,
     maximum: int | None,
 ) -> int | None:
-    value = raw.get(key, default)
+    if key not in raw:
+        return default
+    value = raw[key]
     if value is None:
-        return None
+        if default is None:
+            return None
+        raise ValueError(f"Configuration value 'input.ncbi.{key}' must be an integer.")
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"Configuration value 'input.ncbi.{key}' must be an integer.")
     if value < minimum or (maximum is not None and value > maximum):

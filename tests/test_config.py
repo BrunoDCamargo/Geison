@@ -110,6 +110,11 @@ class PipelineConfigTests(unittest.TestCase):
                 "input.ncbi.batch_size",
             ),
             (
+                "null batch size",
+                "input:\n  ncbi:\n    query: example[Organism]\n    batch_size: null\n",
+                "input.ncbi.batch_size.*integer",
+            ),
+            (
                 "retries too low",
                 "input:\n  ncbi:\n    query: example[Organism]\n    retries: -1\n",
                 "input.ncbi.retries",
@@ -118,6 +123,11 @@ class PipelineConfigTests(unittest.TestCase):
                 "retries too high",
                 "input:\n  ncbi:\n    query: example[Organism]\n    retries: 11\n",
                 "input.ncbi.retries",
+            ),
+            (
+                "null retries",
+                "input:\n  ncbi:\n    query: example[Organism]\n    retries: null\n",
+                "input.ncbi.retries.*integer",
             ),
             (
                 "max records not positive",
