@@ -158,7 +158,7 @@ For frozen input, the pipeline validates and loads the supplied dataset director
 - Configuration errors fail before network or output mutation.
 - Missing `NCBI_EMAIL` fails before the first live request with an actionable message.
 - A missing accession or unexpected record composition fails the affected acquisition rather than silently dropping records.
-- Exhausted retries preserve the underlying error type as the cause and report the operation and attempt count without credentials or full sequences.
+- The Entrez adapter converts raw HTTP/network failures into sanitized project exceptions before retry handling. Exhausted retries preserve only that sanitized exception and report the operation and attempt count without credentials, request URLs, or full sequences.
 - Frozen validation reports the exact artifact or invariant that failed.
 
 ## Testing strategy
