@@ -29,7 +29,11 @@ class QCResult:
 _VALID_NUCLEOTIDES = frozenset("ACGTRYSWKMBDHVN")
 
 
-def evaluate_sequences(records: tuple[LocalSequenceRecord, ...]) -> QCResult:
+def evaluate_sequences(
+    records: tuple[LocalSequenceRecord, ...],
+    *,
+    min_length: int | None = None,
+) -> QCResult:
     qc_records: list[QCRecord] = []
     accepted_ids: list[str] = []
 
@@ -42,6 +46,16 @@ def evaluate_sequences(records: tuple[LocalSequenceRecord, ...]) -> QCResult:
                     sequence_id=record.sequence_id,
                     status=QCStatus.REJECTED,
                     reason_codes=("INVALID_NUCLEOTIDE",),
+                )
+            )
+            continue
+
+        if min_length is not None and len(record.sequence) < min_length:
+            qc_records.append(
+                QCRecord(
+                    sequence_id=record.sequence_id,
+                    status=QCStatus.REJECTED,
+                    reason_codes=("TOO_SHORT",),
                 )
             )
             continue
