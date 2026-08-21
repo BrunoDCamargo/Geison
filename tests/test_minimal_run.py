@@ -104,6 +104,54 @@ class MinimalPipelineRunTests(unittest.TestCase):
         self.assertEqual(qc_report["target_sequence_set"]["sequence_ids"], ["accepted-1", "accepted-2"])
         self.assertEqual(qc_report["evaluation_set"]["sequence_ids"], ["accepted-1", "accepted-2"])
 
+    def test_run_applies_configured_minimum_length_qc_threshold(self):
+        executable = shutil.which("qpcr-pipeline")
+        self.assertIsNotNone(executable, "qpcr-pipeline console command is not installed")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            fasta_path = tmp_path / "target.fasta"
+            config_path = tmp_path / "config.yaml"
+            outdir = tmp_path / "run"
+            fasta_path.write_text(
+                ">accepted\n"
+                "ACGTACGT\n"
+                ">too-short\n"
+                "ACGT\n",
+                encoding="utf-8",
+            )
+            config_path.write_text(
+                "target:\n"
+                "  name: synthetic-target\n"
+                "input:\n"
+                f"  fasta: {fasta_path.as_posix()}\n"
+                "qc:\n"
+                "  min_length: 8\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [executable, "run", str(config_path), "--outdir", str(outdir)],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=LOCAL_PACKAGE_ENV,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads((outdir / "run_summary.json").read_text(encoding="utf-8"))
+            qc_report = json.loads((outdir / "qc_report.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["sequence_ids"], ["accepted"])
+        self.assertEqual(
+            qc_report["records"],
+            [
+                {"sequence_id": "accepted", "status": "ACCEPTED", "reason_codes": []},
+                {"sequence_id": "too-short", "status": "REJECTED", "reason_codes": ["TOO_SHORT"]},
+            ],
+        )
+        self.assertEqual(qc_report["evaluation_set"]["sequence_ids"], ["accepted"])
+
 
 if __name__ == "__main__":
     unittest.main()
