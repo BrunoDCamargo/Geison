@@ -199,12 +199,18 @@ class AccessionAcquisitionTests(unittest.TestCase):
             directory = Path(tmpdir)
             with self.assertRaisesRegex(ValueError, "stopped"):
                 acquire_ncbi_dataset(
-                    self._config(accessions), directory, client=interrupted_client, clock=lambda: "now"
+                    self._config(accessions),
+                    directory,
+                    client=interrupted_client,
+                    clock=lambda: "2026-08-21T00:00:00+00:00",
                 )
             partial = self._read_manifest(directory)
             resumed_client = FakeNcbiClient(records)
             acquire_ncbi_dataset(
-                self._config(accessions), directory, client=resumed_client, clock=lambda: "later"
+                self._config(accessions),
+                directory,
+                client=resumed_client,
+                clock=lambda: "2026-08-21T01:00:00+00:00",
             )
             complete = self._read_manifest(directory)
 
@@ -216,8 +222,8 @@ class AccessionAcquisitionTests(unittest.TestCase):
                 resumed_client.fetch_calls, [(("XY_3.4",), "accession")]
             )
             self.assertEqual(complete["status"], "COMPLETE")
-            self.assertEqual(complete["created_at"], "now")
-            self.assertEqual(complete["updated_at"], "later")
+            self.assertEqual(complete["created_at"], "2026-08-21T00:00:00+00:00")
+            self.assertEqual(complete["updated_at"], "2026-08-21T01:00:00+00:00")
 
     def test_selectively_refetches_a_corrupted_completed_batch(self):
         accessions = ("NC_000001.11", "AB123456.2", "XY_3.4", "MN_5.6")
@@ -226,12 +232,18 @@ class AccessionAcquisitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             directory = Path(tmpdir)
             acquire_ncbi_dataset(
-                self._config(accessions), directory, client=FakeNcbiClient(records), clock=lambda: "now"
+                self._config(accessions),
+                directory,
+                client=FakeNcbiClient(records),
+                clock=lambda: "2026-08-21T00:00:00+00:00",
             )
             (directory / "batches" / "batch-00001.gb").write_text("corrupted", encoding="utf-8")
             refetch_client = FakeNcbiClient(records)
             acquire_ncbi_dataset(
-                self._config(accessions), directory, client=refetch_client, clock=lambda: "later"
+                self._config(accessions),
+                directory,
+                client=refetch_client,
+                clock=lambda: "2026-08-21T01:00:00+00:00",
             )
 
             self.assertEqual(
@@ -267,6 +279,82 @@ class AccessionAcquisitionTests(unittest.TestCase):
                 acquire_ncbi_dataset(
                     self._config(("NC_000001.11",)), Path(tmpdir), clock=lambda: "now"
                 )
+
+    def test_rejects_noncanonical_resume_manifests_before_reuse(self):
+        accessions = ("NC_000001.11",)
+        records = {accessions[0]: self._record(accessions[0])}
+        cases = (
+            ("credential field", "NCBI_API_KEY", "secret", "unrecognized"),
+            ("floating schema version", "schema_version", 1.0, "schema"),
+            ("floating batch size", "batch_size", 2.0, "batch_size"),
+            ("floating retries", "retries", 3.0, "retries"),
+            ("wrong tool", "tool", "other-tool", "tool"),
+            ("malformed update timestamp", "updated_at", "not-a-timestamp", "updated_at"),
+            ("partial with consolidated records", "status", "PARTIAL", "consolidated"),
+            ("complete without consolidated records", "consolidated", None, "consolidated"),
+        )
+
+        for name, field, value, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                directory = Path(tmpdir)
+                acquire_ncbi_dataset(
+                    self._config(accessions),
+                    directory,
+                    client=FakeNcbiClient(records),
+                    clock=lambda: "2026-08-21T00:00:00+00:00",
+                )
+                manifest = self._read_manifest(directory)
+                manifest[field] = value
+                (directory / "dataset_manifest.json").write_text(
+                    json.dumps(manifest), encoding="utf-8"
+                )
+                resumed_client = FakeNcbiClient(records)
+
+                with self.assertRaisesRegex(ValueError, error):
+                    acquire_ncbi_dataset(
+                        self._config(accessions),
+                        directory,
+                        client=resumed_client,
+                        clock=lambda: "2026-08-21T01:00:00+00:00",
+                    )
+
+                self.assertEqual(resumed_client.fetch_calls, [])
+                self.assertEqual(self._read_manifest(directory), manifest)
+
+    def test_rejects_invalid_direct_accession_configs_before_creating_output(self):
+        records = {
+            "A": self._record("A.1"),
+            "B": self._record("B.1"),
+            " ": self._record("BLANK.1"),
+        }
+        cases = (
+            ("query", NcbiInputConfig(accessions=("A",), query="virus")),
+            ("frozen dataset", NcbiInputConfig(accessions=("A",), frozen_dataset=Path("frozen"))),
+            ("maximum records", NcbiInputConfig(accessions=("A",), max_records=1)),
+            ("duplicate accessions", NcbiInputConfig(accessions=("A", "A"))),
+            ("blank accession", NcbiInputConfig(accessions=(" ",))),
+            ("empty accessions", NcbiInputConfig(accessions=())),
+            ("small batch", NcbiInputConfig(accessions=("A",), batch_size=0)),
+            ("large batch", NcbiInputConfig(accessions=("A",), batch_size=501)),
+            ("negative retries", NcbiInputConfig(accessions=("A",), retries=-1)),
+            ("large retries", NcbiInputConfig(accessions=("A",), retries=11)),
+        )
+
+        for name, config in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                dataset_dir = Path(tmpdir) / "dataset"
+                client = FakeNcbiClient(records)
+
+                with self.assertRaisesRegex(ValueError, "accession|batch_size|retries"):
+                    acquire_ncbi_dataset(
+                        config,
+                        dataset_dir,
+                        client=client,
+                        clock=lambda: "2026-08-21T00:00:00+00:00",
+                    )
+
+                self.assertFalse(dataset_dir.exists())
+                self.assertEqual(client.fetch_calls, [])
 
 
 class FrozenDatasetTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 """Frozen NCBI dataset artifacts and acquisition."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +20,21 @@ RECORDS_NAME = "records.gb"
 SCHEMA_VERSION = 1
 _BATCH_DIRECTORY_NAME = "batches"
 _BATCH_FILENAME_FORMAT = "batch-{index:05d}.gb"
+_ACCESSION_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "source",
+        "batch_size",
+        "retries",
+        "resolved_entries",
+        "completed_batches",
+        "consolidated",
+        "created_at",
+        "updated_at",
+        "tool",
+    }
+)
 
 
 class NcbiTransientError(RuntimeError):
@@ -95,8 +110,7 @@ def acquire_ncbi_dataset(
     to the next task.  Requiring the client here keeps this offline implementation
     from making unconfigured network requests.
     """
-    if not config.accessions:
-        raise ValueError("Task 3 acquisition requires explicit NCBI accessions.")
+    _validate_accession_acquisition_config(config)
     if client is None:
         raise ValueError(
             "An NcbiClient is required for acquisition until the production adapter exists."
@@ -166,6 +180,46 @@ def acquire_ncbi_dataset(
     return validate_frozen_dataset(directory)
 
 
+def _validate_accession_acquisition_config(config: NcbiInputConfig) -> None:
+    accessions = config.accessions
+    if (
+        not isinstance(accessions, tuple)
+        or not accessions
+        or any(not isinstance(accession, str) or not accession.strip() for accession in accessions)
+        or len(set(accessions)) != len(accessions)
+    ):
+        raise ValueError(
+            "NCBI accession acquisition requires a non-empty tuple of unique non-blank accessions."
+        )
+    if (
+        config.query is not None
+        or config.frozen_dataset is not None
+        or config.max_records is not None
+    ):
+        raise ValueError(
+            "NCBI accession acquisition cannot combine accessions with query, "
+            "frozen_dataset, or max_records."
+        )
+    _validate_accession_config_integer(
+        config.batch_size, "batch_size", minimum=1, maximum=500
+    )
+    _validate_accession_config_integer(config.retries, "retries", minimum=0, maximum=10)
+
+
+def _validate_accession_config_integer(
+    value: object, name: str, *, minimum: int, maximum: int
+) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or value > maximum
+    ):
+        raise ValueError(
+            f"NCBI accession acquisition {name} must be between {minimum} and {maximum}."
+        )
+
+
 def _planned_batches(
     accessions: tuple[str, ...], batch_size: int
 ) -> tuple[tuple[str, ...], ...]:
@@ -206,30 +260,82 @@ def _load_or_create_accession_manifest(
         return manifest
 
     manifest = _read_manifest(manifest_path)
+    _validate_resumable_accession_manifest(manifest, config)
+    return manifest
+
+
+def _validate_resumable_accession_manifest(
+    manifest: dict[str, object], config: NcbiInputConfig
+) -> None:
+    unknown_fields = set(manifest) - _ACCESSION_MANIFEST_FIELDS
+    missing_fields = _ACCESSION_MANIFEST_FIELDS - set(manifest)
+    if unknown_fields:
+        raise ValueError(
+            "NCBI dataset manifest has unrecognized fields: "
+            f"{', '.join(sorted(unknown_fields))}."
+        )
+    if missing_fields:
+        raise ValueError(
+            "NCBI dataset manifest is missing required fields: "
+            f"{', '.join(sorted(missing_fields))}."
+        )
+
     expected_source = {
         "mode": "accessions",
         "database": "nuccore",
         "requested_accessions": list(config.accessions),
     }
-    if manifest.get("schema_version") != SCHEMA_VERSION:
+    schema_version = manifest["schema_version"]
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != SCHEMA_VERSION
+    ):
         raise ValueError("NCBI dataset manifest schema does not support acquisition resume.")
-    if manifest.get("source") != expected_source:
+    if manifest["source"] != expected_source:
         raise ValueError(
             "NCBI dataset manifest source does not match the requested accessions."
         )
-    if manifest.get("batch_size") != config.batch_size:
+    if (
+        isinstance(manifest["batch_size"], bool)
+        or not isinstance(manifest["batch_size"], int)
+        or manifest["batch_size"] != config.batch_size
+    ):
         raise ValueError("NCBI dataset manifest batch_size does not match this configuration.")
-    if manifest.get("retries") != config.retries:
+    if (
+        isinstance(manifest["retries"], bool)
+        or not isinstance(manifest["retries"], int)
+        or manifest["retries"] != config.retries
+    ):
         raise ValueError("NCBI dataset manifest retries does not match this configuration.")
-    if manifest.get("status") not in {"PARTIAL", "COMPLETE"}:
+    status = manifest["status"]
+    if status not in {"PARTIAL", "COMPLETE"}:
         raise ValueError("NCBI dataset manifest status is not resumable.")
-    if not isinstance(manifest.get("completed_batches"), list):
+    if manifest["tool"] != "geison-qpcr":
+        raise ValueError("NCBI dataset manifest tool must be 'geison-qpcr'.")
+    _validate_manifest_timestamp(manifest["created_at"], "created_at")
+    _validate_manifest_timestamp(manifest["updated_at"], "updated_at")
+    if status == "PARTIAL" and manifest["consolidated"] is not None:
+        raise ValueError("NCBI PARTIAL dataset manifest consolidated must be null.")
+    if status == "COMPLETE" and not isinstance(manifest["consolidated"], dict):
+        raise ValueError("NCBI COMPLETE dataset manifest consolidated must be an object.")
+    if not isinstance(manifest["completed_batches"], list):
         raise ValueError("NCBI dataset manifest completed_batches must be a list.")
-    if not isinstance(manifest.get("resolved_entries"), list):
+    if not isinstance(manifest["resolved_entries"], list):
         raise ValueError("NCBI dataset manifest resolved_entries must be a list.")
-    if not isinstance(manifest.get("created_at"), str):
-        raise ValueError("NCBI dataset manifest created_at must be a string.")
-    return manifest
+
+
+def _validate_manifest_timestamp(value: object, field: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"NCBI dataset manifest {field} must be a UTC timestamp.")
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(
+            f"NCBI dataset manifest {field} must be a UTC timestamp."
+        ) from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() != timedelta(0):
+        raise ValueError(f"NCBI dataset manifest {field} must be a UTC timestamp.")
 
 
 def _validated_cached_batches(
