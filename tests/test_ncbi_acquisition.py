@@ -24,6 +24,10 @@ from qpcr_pipeline.ncbi import (
 )
 
 
+VALID_TIME = "2026-08-21T00:00:00+00:00"
+LATER_TIME = "2026-08-21T01:00:00+00:00"
+
+
 class FakeNcbiClient:
     def __init__(self, records_by_request, failures=(), resolutions=()):
         self.records_by_request = records_by_request
@@ -74,7 +78,7 @@ class AccessionAcquisitionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             dataset = acquire_ncbi_dataset(
-                self._config(accessions), Path(tmpdir), client=client, clock=lambda: "now"
+                self._config(accessions), Path(tmpdir), client=client, clock=lambda: VALID_TIME
             )
             manifest = self._read_manifest(Path(tmpdir))
 
@@ -110,7 +114,7 @@ class AccessionAcquisitionTests(unittest.TestCase):
         ):
             directory = Path(tmpdir)
             dataset = acquire_ncbi_dataset(
-                self._config(accessions), directory, client=client, clock=lambda: "now"
+                self._config(accessions), directory, client=client, clock=lambda: VALID_TIME
             )
             manifest = self._read_manifest(directory)
             serialized = json.dumps(manifest)
@@ -128,8 +132,8 @@ class AccessionAcquisitionTests(unittest.TestCase):
             self.assertNotIn("NCBI_API_KEY", serialized)
             self.assertNotIn("private@example.test", serialized)
             self.assertNotIn("private-key", serialized)
-            self.assertEqual(manifest["created_at"], "now")
-            self.assertEqual(manifest["updated_at"], "now")
+            self.assertEqual(manifest["created_at"], VALID_TIME)
+            self.assertEqual(manifest["updated_at"], VALID_TIME)
             self.assertEqual(len(manifest["completed_batches"]), 2)
             for batch in manifest["completed_batches"]:
                 batch_path = directory / "batches" / batch["filename"]
@@ -157,7 +161,7 @@ class AccessionAcquisitionTests(unittest.TestCase):
                 Path(tmpdir),
                 client=client,
                 sleep=sleeps.append,
-                clock=lambda: "now",
+                clock=lambda: VALID_TIME,
             )
 
         self.assertEqual(sleeps, [1, 2])
@@ -179,7 +183,7 @@ class AccessionAcquisitionTests(unittest.TestCase):
                 Path(tmpdir),
                 client=client,
                 sleep=lambda _: None,
-                clock=lambda: "now",
+                clock=lambda: VALID_TIME,
             )
 
         self.assertEqual(client.fetch_calls, [((accessions[0],), "accession")] * 4)
@@ -196,7 +200,7 @@ class AccessionAcquisitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaisesRegex(ValueError, "invalid"):
                 acquire_ncbi_dataset(
-                    self._config(accessions), Path(tmpdir), client=client, clock=lambda: "now"
+                    self._config(accessions), Path(tmpdir), client=client, clock=lambda: VALID_TIME
                 )
             manifest = self._read_manifest(Path(tmpdir))
 
@@ -209,7 +213,7 @@ class AccessionAcquisitionTests(unittest.TestCase):
         client = FakeNcbiClient(
             {accessions[0]: self._record(accessions[0])}, failures=(ValueError("stopped"),)
         )
-        timestamps = iter(("created", "initialized"))
+        timestamps = iter((VALID_TIME, LATER_TIME))
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaisesRegex(ValueError, "stopped"):
@@ -222,8 +226,8 @@ class AccessionAcquisitionTests(unittest.TestCase):
             manifest = self._read_manifest(Path(tmpdir))
 
         self.assertEqual(manifest["status"], "PARTIAL")
-        self.assertEqual(manifest["created_at"], "created")
-        self.assertEqual(manifest["updated_at"], "initialized")
+        self.assertEqual(manifest["created_at"], VALID_TIME)
+        self.assertEqual(manifest["updated_at"], LATER_TIME)
 
     def test_resumes_after_interruption_with_the_first_completed_batch_reusable(self):
         accessions = ("NC_000001.11", "AB123456.2", "XY_3.4")
@@ -305,7 +309,7 @@ class AccessionAcquisitionTests(unittest.TestCase):
                     self._config(accessions),
                     Path(tmpdir),
                     client=DuplicateResponseClient(records),
-                    clock=lambda: "now",
+                    clock=lambda: VALID_TIME,
                 )
 
     def test_default_client_requires_environment_email_before_creating_output(self):
@@ -315,7 +319,7 @@ class AccessionAcquisitionTests(unittest.TestCase):
                 ValueError, "NCBI_EMAIL"
             ):
                 acquire_ncbi_dataset(
-                    self._config(("NC_000001.11",)), dataset_dir, clock=lambda: "now"
+                    self._config(("NC_000001.11",)), dataset_dir, clock=lambda: VALID_TIME
                 )
             self.assertFalse(dataset_dir.exists())
 
@@ -443,7 +447,7 @@ class QueryAcquisitionTests(unittest.TestCase):
             directory = Path(tmpdir)
             with self.assertRaisesRegex(ValueError, "stopped"):
                 acquire_ncbi_dataset(
-                    self._config(), directory, client=client, clock=lambda: "now"
+                    self._config(), directory, client=client, clock=lambda: VALID_TIME
                 )
             manifest = self._read_manifest(directory)
 
@@ -464,7 +468,7 @@ class QueryAcquisitionTests(unittest.TestCase):
                 self._config(max_records=2),
                 directory,
                 client=client,
-                clock=lambda: "now",
+                clock=lambda: VALID_TIME,
             )
             manifest = self._read_manifest(directory)
 
@@ -538,7 +542,7 @@ class QueryAcquisitionTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "stopped"):
                     acquire_ncbi_dataset(
-                        self._config(), directory, client=creator, clock=lambda: "now"
+                        self._config(), directory, client=creator, clock=lambda: VALID_TIME
                     )
                 before = (directory / "dataset_manifest.json").read_bytes()
                 resumed = FakeNcbiClient(
@@ -547,7 +551,7 @@ class QueryAcquisitionTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, error):
                     acquire_ncbi_dataset(
-                        incompatible, directory, client=resumed, clock=lambda: "later"
+                        incompatible, directory, client=resumed, clock=lambda: LATER_TIME
                     )
 
                 self.assertEqual(resumed.resolve_calls, [])
@@ -587,7 +591,7 @@ class QueryAcquisitionTests(unittest.TestCase):
                 client = FakeNcbiClient({}, resolutions=(self._resolution(),))
 
                 with self.assertRaisesRegex(ValueError, error):
-                    acquire_ncbi_dataset(config, dataset_dir, client=client, clock=lambda: "now")
+                    acquire_ncbi_dataset(config, dataset_dir, client=client, clock=lambda: VALID_TIME)
 
                 self.assertFalse(dataset_dir.exists())
                 self.assertEqual(client.resolve_calls, [])
@@ -626,7 +630,7 @@ class QueryAcquisitionTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, error):
                     acquire_ncbi_dataset(
-                        config, directory, client=resumed, clock=lambda: "later"
+                        config, directory, client=resumed, clock=lambda: LATER_TIME
                     )
 
                 self.assertEqual(resumed.resolve_calls, [])
@@ -659,7 +663,7 @@ class QueryAcquisitionTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "resolved_uids|composition"):
                 acquire_ncbi_dataset(
-                    self._config(), directory, client=resumed, clock=lambda: "later"
+                    self._config(), directory, client=resumed, clock=lambda: LATER_TIME
                 )
 
             self.assertEqual(resumed.resolve_calls, [])
@@ -680,7 +684,7 @@ class QueryAcquisitionTests(unittest.TestCase):
                 Path(tmpdir),
                 client=client,
                 sleep=lambda _: None,
-                clock=lambda: "now",
+                clock=lambda: VALID_TIME,
             )
 
         self.assertEqual(client.resolve_calls, [("example[Organism]", None)] * 3)
@@ -742,6 +746,39 @@ class _FakeEntrezModule:
         handle = io.StringIO(self.fetch_text)
         self.fetch_handles.append(handle)
         return handle
+
+
+class _InternallyRetryingEntrezModule(_FakeEntrezModule):
+    def __init__(self, *, failures_before_success: int, max_tries: int = 5):
+        super().__init__(("101",))
+        self.max_tries = max_tries
+        self.sleep_between_tries = 13
+        self.failures_before_success = failures_before_success
+        self.underlying_search_attempts = 0
+        self.internal_delays = []
+        self.observed_retry_settings = []
+
+    def esearch(self, **kwargs):
+        self.search_calls.append((kwargs, self.email, self.tool, self.api_key))
+        self.observed_retry_settings.append((self.max_tries, self.sleep_between_tries))
+        for attempt_index in range(self.max_tries):
+            self.underlying_search_attempts += 1
+            if self.failures_before_success:
+                self.failures_before_success -= 1
+                if attempt_index + 1 < self.max_tries:
+                    self.internal_delays.append(self.sleep_between_tries)
+                    continue
+                raise URLError("private-api-key")
+            handle = _SearchHandle(
+                {
+                    "Count": "1",
+                    "IdList": ["101"],
+                    "QueryTranslation": "translated query",
+                }
+            )
+            self.search_handles.append(handle)
+            return handle
+        raise AssertionError("max_tries must permit one request attempt")
 
 
 class _CoordinatedEntrezModule(_FakeEntrezModule):
@@ -912,6 +949,45 @@ class BioEntrezClientTests(unittest.TestCase):
             ],
         )
 
+    def test_disables_entrez_internal_retries_and_restores_settings_after_failure(self):
+        module = _InternallyRetryingEntrezModule(
+            failures_before_success=99, max_tries=4
+        )
+
+        with self.assertRaises(NcbiTransientError) as raised:
+            self._client(module).resolve_query("example", 1)
+
+        self.assertEqual(module.underlying_search_attempts, 1)
+        self.assertEqual(module.internal_delays, [])
+        self.assertEqual(module.observed_retry_settings, [(1, 0)])
+        self.assertEqual(module.max_tries, 4)
+        self.assertEqual(module.sleep_between_tries, 13)
+        self.assertNotIn("private-api-key", str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_outer_retry_policy_alone_controls_entrez_attempts_and_delays(self):
+        module = _InternallyRetryingEntrezModule(failures_before_success=2)
+        module.fetch_text = self._genbank("NC_1.2")
+        sleeps = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            acquire_ncbi_dataset(
+                NcbiInputConfig(query="example", retries=2, max_records=1),
+                Path(tmpdir),
+                client=self._client(module),
+                sleep=sleeps.append,
+                clock=lambda: VALID_TIME,
+            )
+
+        self.assertEqual(module.underlying_search_attempts, 3)
+        self.assertEqual(len(module.search_calls), 3)
+        self.assertEqual(module.internal_delays, [])
+        self.assertEqual(sleeps, [1, 2])
+        self.assertEqual(module.observed_retry_settings, [(1, 0)] * 3)
+        self.assertEqual(module.max_tries, 5)
+        self.assertEqual(module.sleep_between_tries, 13)
+
     def test_environment_factory_requires_nonblank_email_before_any_request(self):
         module = _FakeEntrezModule()
         for environ in ({}, {"NCBI_EMAIL": "   "}):
@@ -1017,6 +1093,12 @@ class BioEntrezClientTests(unittest.TestCase):
 
 
 class FrozenDatasetTests(unittest.TestCase):
+    @staticmethod
+    def _write_manifest(directory: Path, manifest: dict[str, object]) -> None:
+        (directory / "dataset_manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
     def _create_dataset(
         self,
         directory: Path,
@@ -1025,17 +1107,36 @@ class FrozenDatasetTests(unittest.TestCase):
         write_records: bool = True,
     ) -> tuple[Path, dict[str, object]]:
         records_path = directory / "records.gb"
+        records = (
+            SeqRecord(Seq("ATGCATGC"), id="NC_1.2", description="first record"),
+            SeqRecord(Seq("GCTAGCTA"), id="NC_2.3", description="second record"),
+        )
+        for record in records:
+            record.annotations["molecule_type"] = "DNA"
+        serialized = io.StringIO()
+        SeqIO.write(records, serialized, "genbank")
+        record_bytes = serialized.getvalue().encode("utf-8")
         if write_records:
-            records = (
-                SeqRecord(Seq("ATGCATGC"), id="NC_1.2", description="first record"),
-                SeqRecord(Seq("GCTAGCTA"), id="NC_2.3", description="second record"),
-            )
-            for record in records:
-                record.annotations["molecule_type"] = "DNA"
-            with records_path.open("w", encoding="utf-8") as handle:
-                SeqIO.write(records, handle, "genbank")
+            records_path.write_bytes(record_bytes)
 
-        record_bytes = records_path.read_bytes() if write_records else b""
+        entries = [
+            {
+                "requested_accession": "NC_1.2",
+                "uid": None,
+                "accession": "NC_1",
+                "accession_version": "NC_1.2",
+            },
+            {
+                "requested_accession": "NC_2.3",
+                "uid": None,
+                "accession": "NC_2",
+                "accession_version": "NC_2.3",
+            },
+        ]
+        batches_directory = directory / "batches"
+        batches_directory.mkdir()
+        batch_path = batches_directory / "batch-00000.gb"
+        batch_path.write_bytes(record_bytes)
         manifest: dict[str, object] = {
             "schema_version": 1,
             "status": "COMPLETE",
@@ -1046,21 +1147,18 @@ class FrozenDatasetTests(unittest.TestCase):
             },
             "batch_size": 100,
             "retries": 3,
-            "resolved_entries": [
+            "resolved_entries": entries,
+            "completed_batches": [
                 {
-                    "requested_accession": "NC_1.2",
-                    "uid": None,
-                    "accession": "NC_1",
-                    "accession_version": "NC_1.2",
-                },
-                {
-                    "requested_accession": "NC_2.3",
-                    "uid": None,
-                    "accession": "NC_2",
-                    "accession_version": "NC_2.3",
-                },
+                    "filename": "batch-00000.gb",
+                    "requested_identifiers": ["NC_1.2", "NC_2.3"],
+                    "record_count": 2,
+                    "byte_size": len(record_bytes),
+                    "sha256": hashlib.sha256(record_bytes).hexdigest(),
+                    "record_ids": ["NC_1.2", "NC_2.3"],
+                    "resolved_entries": entries,
+                }
             ],
-            "completed_batches": [],
             "consolidated": {
                 "filename": "records.gb",
                 "record_count": 2,
@@ -1183,6 +1281,199 @@ class FrozenDatasetTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "resolved_entries.*accession_version"):
                 validate_frozen_dataset(tmpdir)
+
+    def test_rejects_unknown_fields_at_every_manifest_level(self):
+        mutations = (
+            ("top-level credential", (), "NCBI_EMAIL"),
+            ("source credential", ("source",), "api_key"),
+            ("resolved entry arbitrary", ("resolved_entries", 0), "arbitrary"),
+            ("completed batch credential", ("completed_batches", 0), "NCBI_API_KEY"),
+            ("consolidated arbitrary", ("consolidated",), "unexpected"),
+        )
+
+        for name, location, field in mutations:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                directory = Path(tmpdir)
+                _, original = self._create_dataset(directory)
+                manifest = json.loads(json.dumps(original))
+                target = manifest
+                for part in location:
+                    target = target[part]
+                target[field] = "private-secret"
+                self._write_manifest(directory, manifest)
+
+                with self.assertRaisesRegex(ValueError, rf"{field}.*unrecognized"):
+                    validate_frozen_dataset(directory)
+
+    def test_rejects_missing_fields_at_every_manifest_level(self):
+        removals = (
+            ("top-level", (), "tool"),
+            ("source", ("source",), "database"),
+            ("resolved entry", ("resolved_entries", 0), "uid"),
+            ("completed batch", ("completed_batches", 0), "requested_identifiers"),
+            ("consolidated", ("consolidated",), "sha256"),
+        )
+
+        for name, location, field in removals:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                directory = Path(tmpdir)
+                _, original = self._create_dataset(directory)
+                manifest = json.loads(json.dumps(original))
+                target = manifest
+                for part in location:
+                    target = target[part]
+                target.pop(field)
+                self._write_manifest(directory, manifest)
+
+                with self.assertRaisesRegex(ValueError, rf"{field}.*required"):
+                    validate_frozen_dataset(directory)
+
+    def test_rejects_missing_or_inconsistent_source_metadata(self):
+        cases = (
+            ("missing database", lambda source: source.pop("database"), "source.*database"),
+            (
+                "wrong database",
+                lambda source: source.__setitem__("database", "protein"),
+                "source.*database",
+            ),
+            (
+                "wrong mode",
+                lambda source: source.__setitem__("mode", "other"),
+                "source.*mode",
+            ),
+            (
+                "empty accessions",
+                lambda source: source.__setitem__("requested_accessions", []),
+                "requested_accessions",
+            ),
+            (
+                "duplicate accessions",
+                lambda source: source.__setitem__(
+                    "requested_accessions", ["NC_1.2", "NC_1.2"]
+                ),
+                "requested_accessions",
+            ),
+        )
+
+        for name, mutate, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                directory = Path(tmpdir)
+                _, manifest = self._create_dataset(directory)
+                mutate(manifest["source"])
+                self._write_manifest(directory, manifest)
+
+                with self.assertRaisesRegex(ValueError, error):
+                    validate_frozen_dataset(directory)
+
+    def test_rejects_malformed_manifest_metadata(self):
+        cases = (
+            ("tool", ("tool",), "other-tool", "tool"),
+            ("local timestamp", ("created_at",), "2026-08-21T00:00:00", "created_at"),
+            ("offset timestamp", ("updated_at",), "2026-08-21T00:00:00-03:00", "updated_at"),
+            ("boolean batch size", ("batch_size",), True, "batch_size"),
+            ("floating retries", ("retries",), 3.0, "retries"),
+            (
+                "batch count type",
+                ("completed_batches", 0, "record_count"),
+                True,
+                "completed_batches.*record_count",
+            ),
+            (
+                "entry uid type",
+                ("resolved_entries", 0, "uid"),
+                7,
+                "resolved_entries.*uid",
+            ),
+        )
+
+        for name, location, value, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                directory = Path(tmpdir)
+                _, original = self._create_dataset(directory)
+                manifest = json.loads(json.dumps(original))
+                target = manifest
+                for part in location[:-1]:
+                    target = target[part]
+                target[location[-1]] = value
+                self._write_manifest(directory, manifest)
+
+                with self.assertRaisesRegex(ValueError, error):
+                    validate_frozen_dataset(directory)
+
+    def test_rejects_inconsistent_source_entry_and_batch_composition(self):
+        cases = (
+            (
+                "requested accession association",
+                ("resolved_entries", 0, "requested_accession"),
+                "OTHER.1",
+                "resolved_entries|source composition",
+            ),
+            (
+                "accession base",
+                ("resolved_entries", 0, "accession"),
+                "OTHER",
+                "resolved_entries.*accession",
+            ),
+            (
+                "batch request order",
+                ("completed_batches", 0, "requested_identifiers"),
+                ["NC_2.3", "NC_1.2"],
+                "completed_batches.*requested_identifiers",
+            ),
+            (
+                "batch record order",
+                ("completed_batches", 0, "record_ids"),
+                ["NC_2.3", "NC_1.2"],
+                "completed_batches.*record_ids",
+            ),
+            (
+                "batch entry association",
+                ("completed_batches", 0, "resolved_entries", 0, "accession_version"),
+                "OTHER.1",
+                "completed_batches.*resolved_entries",
+            ),
+            (
+                "batch checksum",
+                ("completed_batches", 0, "sha256"),
+                "0" * 64,
+                "completed_batches.*sha256",
+            ),
+        )
+
+        for name, location, value, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                directory = Path(tmpdir)
+                _, original = self._create_dataset(directory)
+                manifest = json.loads(json.dumps(original))
+                target = manifest
+                for part in location[:-1]:
+                    target = target[part]
+                target[location[-1]] = value
+                self._write_manifest(directory, manifest)
+
+                with self.assertRaisesRegex(ValueError, error):
+                    validate_frozen_dataset(directory)
+
+    def test_rejects_checksum_valid_empty_dataset_that_claims_accessions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            records_path, manifest = self._create_dataset(directory)
+            records_path.write_bytes(b"")
+            (directory / "batches" / "batch-00000.gb").unlink()
+            manifest["resolved_entries"] = []
+            manifest["completed_batches"] = []
+            manifest["consolidated"] = {
+                "filename": "records.gb",
+                "record_count": 0,
+                "byte_size": 0,
+                "sha256": hashlib.sha256(b"").hexdigest(),
+            }
+            self._write_manifest(directory, manifest)
+
+            with self.assertRaisesRegex(
+                ValueError, "requested_accessions|resolved_entries|source composition"
+            ):
+                validate_frozen_dataset(directory)
 
 
 if __name__ == "__main__":

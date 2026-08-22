@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
@@ -199,6 +200,139 @@ class MinimalPipelineRunTests(unittest.TestCase):
                 self.skipTest(f"symlink creation is unavailable: {error}")
 
         self._assert_frozen_manifest_destination_does_not_mutate_source(symlink)
+
+    def test_run_rejects_invalid_direct_config_before_creating_output(self):
+        cases = (
+            PipelineConfig(
+                target_name="ambiguous",
+                input_fasta=FIXTURE_FASTA,
+                input_genbank=Path("unused.gb"),
+            ),
+            PipelineConfig(
+                target_name="ambiguous-ncbi",
+                input_ncbi=NcbiInputConfig(
+                    query="example[Organism]", accessions=("NC_1",)
+                ),
+            ),
+        )
+
+        for config in cases:
+            with self.subTest(config=config), tempfile.TemporaryDirectory() as tmpdir:
+                outdir = Path(tmpdir) / "run"
+
+                with self.assertRaisesRegex(ValueError, "Exactly one|exactly one"):
+                    run_pipeline(config, outdir)
+
+                self.assertFalse(outdir.exists())
+
+    def test_run_atomically_replaces_summary_and_qc_hardlinks_to_frozen_artifacts(self):
+        accession = "NC_FROZEN.1"
+        record = self._ncbi_record(accession, "ACGTACGT")
+
+        class DatasetWriter:
+            def resolve_query(self, query, max_records):
+                raise AssertionError("query resolution was not expected")
+
+            def fetch_records(self, identifiers, *, identifier_kind):
+                return tuple(
+                    NcbiFetchedRecord(request_id=identifier, record=record)
+                    for identifier in identifiers
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            frozen_dir = tmp_path / "frozen"
+            acquire_ncbi_dataset(
+                NcbiInputConfig(accessions=(accession,)),
+                frozen_dir,
+                client=DatasetWriter(),
+                clock=lambda: "2026-08-21T00:00:00+00:00",
+            )
+            before = self._directory_bytes(frozen_dir)
+            outdir = tmp_path / "run"
+            outdir.mkdir()
+            summary_path = outdir / "run_summary.json"
+            qc_path = outdir / "qc_report.json"
+            source_records = frozen_dir / "records.gb"
+            source_batch = frozen_dir / "batches" / "batch-00000.gb"
+            os.link(source_records, summary_path)
+            os.link(source_batch, qc_path)
+
+            run_pipeline(
+                PipelineConfig(
+                    target_name="synthetic-target",
+                    input_ncbi=NcbiInputConfig(frozen_dataset=frozen_dir),
+                ),
+                outdir,
+            )
+
+            self.assertEqual(self._directory_bytes(frozen_dir), before)
+            self.assertFalse(os.path.samefile(source_records, summary_path))
+            self.assertFalse(os.path.samefile(source_batch, qc_path))
+            self.assertEqual(json.loads(summary_path.read_text())["status"], "COMPLETED")
+            self.assertEqual(
+                json.loads(qc_path.read_text())["evaluation_set"]["sequence_ids"],
+                [accession],
+            )
+
+    def test_run_rejects_output_inside_frozen_dataset_without_mutation(self):
+        accession = "NC_FROZEN.1"
+        record = self._ncbi_record(accession, "ACGTACGT")
+
+        class DatasetWriter:
+            def resolve_query(self, query, max_records):
+                raise AssertionError("query resolution was not expected")
+
+            def fetch_records(self, identifiers, *, identifier_kind):
+                return tuple(
+                    NcbiFetchedRecord(request_id=identifier, record=record)
+                    for identifier in identifiers
+                )
+
+        for name in ("same directory", "nested directory"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                frozen_dir = Path(tmpdir) / "frozen"
+                acquire_ncbi_dataset(
+                    NcbiInputConfig(accessions=(accession,)),
+                    frozen_dir,
+                    client=DatasetWriter(),
+                    clock=lambda: "2026-08-21T00:00:00+00:00",
+                )
+                before = self._directory_bytes(frozen_dir)
+                outdir = (
+                    frozen_dir if name == "same directory" else frozen_dir / "nested-run"
+                )
+
+                with self.assertRaisesRegex(ValueError, "output directory.*frozen dataset"):
+                    run_pipeline(
+                        PipelineConfig(
+                            target_name="synthetic-target",
+                            input_ncbi=NcbiInputConfig(frozen_dataset=frozen_dir),
+                        ),
+                        outdir,
+                    )
+
+                if outdir != frozen_dir:
+                    self.assertFalse(outdir.exists())
+                self.assertEqual(self._directory_bytes(frozen_dir), before)
+
+    def test_atomic_summary_write_cleans_temporary_file_after_replace_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "run"
+            outdir.mkdir()
+
+            with patch.object(Path, "replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    run_pipeline(
+                        PipelineConfig(
+                            target_name="synthetic-target", input_fasta=FIXTURE_FASTA
+                        ),
+                        outdir,
+                    )
+
+            self.assertFalse((outdir / "run_summary.json").exists())
+            self.assertFalse((outdir / "qc_report.json").exists())
+            self.assertEqual(list(outdir.iterdir()), [])
 
     def test_run_creates_completed_summary_for_fixture(self):
         executable = shutil.which("qpcr-pipeline")

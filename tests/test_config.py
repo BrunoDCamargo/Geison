@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qpcr_pipeline.config import PipelineConfig, load_config
+from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig, load_config
 
 
 class PipelineConfigTests(unittest.TestCase):
@@ -139,6 +139,70 @@ class PipelineConfigTests(unittest.TestCase):
             with self.subTest(name=name):
                 with self.assertRaisesRegex(ValueError, message):
                     self._load_yaml("target:\n  name: invalid\n" + input_yaml)
+
+    def test_rejects_unknown_ncbi_configuration_keys(self):
+        for key in ("api_key", "credential", "arbitrary"):
+            with self.subTest(key=key), self.assertRaisesRegex(
+                ValueError, rf"input\.ncbi.*{key}.*unrecognized"
+            ):
+                self._load_yaml(
+                    "target:\n"
+                    "  name: invalid\n"
+                    "input:\n"
+                    "  ncbi:\n"
+                    "    query: example[Organism]\n"
+                    f"    {key}: secret-value\n"
+                )
+
+    def test_selected_input_rejects_ambiguous_direct_pipeline_sources(self):
+        cases = (
+            PipelineConfig(
+                target_name="ambiguous",
+                input_fasta=Path("target.fasta"),
+                input_genbank=Path("target.gb"),
+            ),
+            PipelineConfig(
+                target_name="ambiguous",
+                input_fasta=Path("target.fasta"),
+                input_ncbi=NcbiInputConfig(query="example[Organism]"),
+            ),
+        )
+
+        for config in cases:
+            with self.subTest(config=config), self.assertRaisesRegex(
+                ValueError, "Exactly one sequence input"
+            ):
+                _ = config.selected_input
+
+    def test_selected_input_rejects_invalid_direct_ncbi_modes_and_fields(self):
+        cases = (
+            (NcbiInputConfig(query="virus", accessions=("NC_1",)), "exactly one"),
+            (
+                NcbiInputConfig(query="virus", frozen_dataset=Path("frozen")),
+                "exactly one",
+            ),
+            (
+                NcbiInputConfig(accessions=("NC_1",), frozen_dataset=Path("frozen")),
+                "exactly one",
+            ),
+            (NcbiInputConfig(accessions=("NC_1", "NC_1")), "unique"),
+            (NcbiInputConfig(accessions=(" ",)), "non-blank"),
+            (NcbiInputConfig(query="virus", batch_size=True), "batch_size"),
+            (NcbiInputConfig(query="virus", retries=1.5), "retries"),
+            (NcbiInputConfig(accessions=("NC_1",), max_records=1), "max_records"),
+            (
+                NcbiInputConfig(frozen_dataset=Path("frozen"), batch_size=1),
+                "frozen_dataset.*batch_size",
+            ),
+        )
+
+        for ncbi_config, error in cases:
+            with self.subTest(ncbi_config=ncbi_config), self.assertRaisesRegex(
+                ValueError, error
+            ):
+                _ = PipelineConfig(
+                    target_name="invalid", input_ncbi=ncbi_config
+                ).selected_input
 
     def test_loads_minimal_yaml_configuration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
