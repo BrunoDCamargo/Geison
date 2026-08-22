@@ -1,15 +1,17 @@
 """Frozen NCBI dataset artifacts and acquisition."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import time
-from typing import Callable, Literal, Protocol, TypeVar
+from typing import Callable, Literal, Mapping, Protocol, TypeVar
+from urllib.error import HTTPError, URLError
 
-from Bio import SeqIO
+from Bio import Entrez, SeqIO
 from Bio.SeqRecord import SeqRecord
 
 from qpcr_pipeline.config import NcbiInputConfig
@@ -20,7 +22,7 @@ RECORDS_NAME = "records.gb"
 SCHEMA_VERSION = 1
 _BATCH_DIRECTORY_NAME = "batches"
 _BATCH_FILENAME_FORMAT = "batch-{index:05d}.gb"
-_ACCESSION_MANIFEST_FIELDS = frozenset(
+_MANIFEST_FIELDS = frozenset(
     {
         "schema_version",
         "status",
@@ -39,6 +41,10 @@ _ACCESSION_MANIFEST_FIELDS = frozenset(
 
 class NcbiTransientError(RuntimeError):
     """A sanitized NCBI failure that may be retried."""
+
+
+class NcbiRequestError(RuntimeError):
+    """A sanitized NCBI failure that must not be retried."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,12 +74,225 @@ class NcbiClient(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class BioEntrezClient:
+    """Credential-safe Bio.Entrez implementation of the NCBI client boundary."""
+
+    email: str = field(repr=False)
+    api_key: str | None = field(default=None, repr=False)
+    entrez_module: object = field(default=Entrez, repr=False)
+
+    def __post_init__(self) -> None:
+        email = self.email.strip()
+        if not email:
+            raise ValueError("NCBI_EMAIL must be set for live NCBI acquisition.")
+        if self.api_key is not None and not isinstance(self.api_key, str):
+            raise ValueError("NCBI_API_KEY must be a string when set.")
+        object.__setattr__(self, "email", email)
+        api_key = self.api_key.strip() if self.api_key else ""
+        object.__setattr__(self, "api_key", api_key or None)
+
+    @classmethod
+    def from_environment(
+        cls,
+        environ: Mapping[str, str] = os.environ,
+        *,
+        entrez_module: object = Entrez,
+    ) -> "BioEntrezClient":
+        email = environ.get("NCBI_EMAIL", "").strip()
+        if not email:
+            raise ValueError("NCBI_EMAIL must be set for live NCBI acquisition.")
+        return cls(
+            email=email,
+            api_key=environ.get("NCBI_API_KEY") or None,
+            entrez_module=entrez_module,
+        )
+
+    def resolve_query(
+        self, query: str, max_records: int | None
+    ) -> ResolvedNcbiQuery:
+        requested_count = min(max_records, 10_000) if max_records is not None else 10_000
+        uids: list[str] = []
+        reported_count: int | None = None
+        query_translation: str | None = None
+
+        while reported_count is None or len(uids) < min(
+            reported_count, max_records if max_records is not None else reported_count
+        ):
+            retmax = requested_count if reported_count is None else min(
+                10_000,
+                min(
+                    reported_count,
+                    max_records if max_records is not None else reported_count,
+                )
+                - len(uids),
+            )
+            response = self._search_page(query, retstart=len(uids), retmax=retmax)
+            page_count, page_uids, page_translation = _validated_search_response(response)
+            if reported_count is None:
+                reported_count = page_count
+                query_translation = page_translation
+            elif page_count != reported_count or page_translation != query_translation:
+                raise ValueError("NCBI query response composition changed between pages.")
+            uids.extend(page_uids)
+            if not page_uids:
+                break
+
+        assert reported_count is not None
+        assert query_translation is not None
+        selected_count = min(
+            reported_count, max_records if max_records is not None else reported_count
+        )
+        if len(uids) != selected_count or len(set(uids)) != len(uids):
+            raise ValueError("NCBI query response count does not match its UID composition.")
+        return ResolvedNcbiQuery(
+            uids=tuple(uids),
+            reported_count=reported_count,
+            query_translation=query_translation,
+        )
+
+    def fetch_records(
+        self,
+        identifiers: tuple[str, ...],
+        *,
+        identifier_kind: Literal["uid", "accession"],
+    ) -> tuple[NcbiFetchedRecord, ...]:
+        if identifier_kind not in {"uid", "accession"}:
+            raise ValueError("NCBI identifier kind must be 'uid' or 'accession'.")
+        if (
+            not isinstance(identifiers, tuple)
+            or not identifiers
+            or any(not isinstance(identifier, str) or not identifier for identifier in identifiers)
+            or len(set(identifiers)) != len(identifiers)
+        ):
+            raise ValueError("NCBI fetch identifiers must be unique non-empty strings.")
+
+        records = self._fetch_genbank(identifiers)
+        if len(records) != len(identifiers):
+            raise ValueError(
+                "NCBI fetch response must contain exactly one record for every identifier."
+            )
+        if identifier_kind == "uid":
+            return tuple(
+                NcbiFetchedRecord(request_id=identifier, record=record)
+                for identifier, record in zip(identifiers, records, strict=True)
+            )
+        return _map_accession_records(identifiers, records)
+
+    def _configure(self) -> None:
+        setattr(self.entrez_module, "email", self.email)
+        setattr(self.entrez_module, "tool", "geison-qpcr")
+        setattr(self.entrez_module, "api_key", self.api_key)
+
+    def _search_page(self, query: str, *, retstart: int, retmax: int) -> object:
+        def request() -> object:
+            self._configure()
+            handle = self.entrez_module.esearch(
+                db="nuccore",
+                term=query,
+                retstart=retstart,
+                retmax=retmax,
+            )
+            try:
+                return self.entrez_module.read(handle)
+            finally:
+                handle.close()
+
+        return _run_entrez_request(request)
+
+    def _fetch_genbank(self, identifiers: tuple[str, ...]) -> tuple[SeqRecord, ...]:
+        def request() -> tuple[SeqRecord, ...]:
+            self._configure()
+            handle = self.entrez_module.efetch(
+                db="nuccore",
+                id=",".join(identifiers),
+                rettype="gb",
+                retmode="text",
+            )
+            try:
+                return tuple(SeqIO.parse(handle, "genbank"))
+            finally:
+                handle.close()
+
+        return _run_entrez_request(request)
+
+
+@dataclass(frozen=True, slots=True)
 class AcquiredNcbiDataset:
     records_path: Path
     manifest_path: Path
 
 
 _Result = TypeVar("_Result")
+
+
+def _run_entrez_request(operation: Callable[[], _Result]) -> _Result:
+    translated: NcbiTransientError | NcbiRequestError
+    try:
+        return operation()
+    except HTTPError as error:
+        error.close()
+        if error.code == 429 or 500 <= error.code <= 599:
+            translated = NcbiTransientError("NCBI request failed temporarily.")
+        else:
+            translated = NcbiRequestError(
+                f"NCBI request failed with HTTP status {error.code}."
+            )
+    except (URLError, TimeoutError, OSError):
+        translated = NcbiTransientError("NCBI network request failed temporarily.")
+    raise translated from None
+
+
+def _validated_search_response(response: object) -> tuple[int, tuple[str, ...], str]:
+    if not isinstance(response, Mapping):
+        raise ValueError("NCBI query response must be a mapping.")
+    raw_count = response.get("Count")
+    raw_uids = response.get("IdList")
+    translation = response.get("QueryTranslation")
+    try:
+        reported_count = int(raw_count)
+    except (TypeError, ValueError):
+        raise ValueError("NCBI query response count must be a non-negative integer.") from None
+    if reported_count < 0 or str(reported_count) != str(raw_count):
+        raise ValueError("NCBI query response count must be a non-negative integer.")
+    if (
+        not isinstance(raw_uids, list)
+        or any(not isinstance(uid, str) or not uid for uid in raw_uids)
+        or not isinstance(translation, str)
+    ):
+        raise ValueError("NCBI query response has an invalid UID composition.")
+    return reported_count, tuple(raw_uids), translation
+
+
+def _map_accession_records(
+    identifiers: tuple[str, ...], records: tuple[SeqRecord, ...]
+) -> tuple[NcbiFetchedRecord, ...]:
+    records_by_request: dict[str, SeqRecord] = {}
+    requested = set(identifiers)
+    returned_accessions: set[str] = set()
+    for record in records:
+        if record.id in returned_accessions:
+            raise ValueError(
+                "NCBI fetch response accession composition does not match the request."
+            )
+        returned_accessions.add(record.id)
+        base_accession = re.sub(r"\.\d+$", "", record.id)
+        if record.id in requested and record.id not in records_by_request:
+            request_id = record.id
+        elif base_accession in requested and base_accession not in records_by_request:
+            request_id = base_accession
+        else:
+            raise ValueError(
+                "NCBI fetch response accession composition does not match the request."
+            )
+        records_by_request[request_id] = record
+    if set(records_by_request) != requested:
+        raise ValueError(
+            "NCBI fetch response accession composition does not match the request."
+        )
+    return tuple(
+        NcbiFetchedRecord(request_id=identifier, record=records_by_request[identifier])
+        for identifier in identifiers
+    )
 
 
 def utc_now() -> str:
@@ -104,33 +323,36 @@ def acquire_ncbi_dataset(
     sleep: Callable[[float], object] = time.sleep,
     clock: Callable[[], str] = utc_now,
 ) -> AcquiredNcbiDataset:
-    """Acquire or resume a frozen accession dataset using the supplied client.
-
-    Query acquisition and the production Entrez adapter are deliberately deferred
-    to the next task.  Requiring the client here keeps this offline implementation
-    from making unconfigured network requests.
-    """
-    _validate_accession_acquisition_config(config)
+    """Acquire or resume a frozen query or accession dataset."""
+    source_mode = _validate_acquisition_config(config)
     if client is None:
-        raise ValueError(
-            "An NcbiClient is required for acquisition until the production adapter exists."
-        )
+        client = BioEntrezClient.from_environment()
 
     directory = Path(dataset_dir)
-    directory.mkdir(parents=True, exist_ok=True)
+    manifest_path = directory / MANIFEST_NAME
+    if not manifest_path.exists():
+        directory.mkdir(parents=True, exist_ok=True)
+    manifest, identifiers = _load_or_create_manifest(
+        manifest_path,
+        config=config,
+        client=client,
+        sleep=sleep,
+        clock=clock,
+    )
     batches_directory = directory / _BATCH_DIRECTORY_NAME
     batches_directory.mkdir(exist_ok=True)
-    manifest_path = directory / MANIFEST_NAME
-    manifest = _load_or_create_accession_manifest(
-        manifest_path, config=config, clock=clock
+    identifier_kind: Literal["uid", "accession"] = (
+        "uid" if source_mode == "query" else "accession"
     )
-    batches = _planned_batches(config.accessions, config.batch_size)
+    batches = _planned_batches(identifiers, config.batch_size)
     valid_batches, cache_changed = _validated_cached_batches(
-        manifest, directory, batches
+        manifest, directory, batches, identifier_kind
     )
 
     if cache_changed:
-        _set_partial_manifest(manifest, batches, valid_batches, clock)
+        _set_partial_manifest(
+            manifest, batches, valid_batches, clock
+        )
         _write_json_atomic(manifest_path, manifest)
 
     if (
@@ -141,7 +363,9 @@ def acquire_ncbi_dataset(
         try:
             return validate_frozen_dataset(directory)
         except ValueError:
-            _set_partial_manifest(manifest, batches, valid_batches, clock)
+            _set_partial_manifest(
+                manifest, batches, valid_batches, clock
+            )
             _write_json_atomic(manifest_path, manifest)
 
     for batch_index, requested_identifiers in enumerate(batches):
@@ -149,7 +373,7 @@ def acquire_ncbi_dataset(
             continue
         fetched = _with_retries(
             lambda: client.fetch_records(
-                requested_identifiers, identifier_kind="accession"
+                requested_identifiers, identifier_kind=identifier_kind
             ),
             config.retries,
             sleep,
@@ -160,17 +384,22 @@ def acquire_ncbi_dataset(
             batch_index=batch_index,
             requested_identifiers=requested_identifiers,
             records=records,
+            identifier_kind=identifier_kind,
         )
         valid_batches[batch_index] = metadata
-        _set_partial_manifest(manifest, batches, valid_batches, clock)
+        _set_partial_manifest(
+            manifest, batches, valid_batches, clock
+        )
         _write_json_atomic(manifest_path, manifest)
 
-    _write_consolidated_dataset(directory, batches, valid_batches)
+    _write_consolidated_dataset(
+        directory, batches, valid_batches, identifier_kind
+    )
     records_path = directory / RECORDS_NAME
     record_bytes = records_path.read_bytes()
     manifest["consolidated"] = {
         "filename": RECORDS_NAME,
-        "record_count": len(config.accessions),
+        "record_count": len(identifiers),
         "byte_size": len(record_bytes),
         "sha256": _sha256_bytes(record_bytes),
     }
@@ -180,33 +409,46 @@ def acquire_ncbi_dataset(
     return validate_frozen_dataset(directory)
 
 
-def _validate_accession_acquisition_config(config: NcbiInputConfig) -> None:
+def _validate_acquisition_config(
+    config: NcbiInputConfig,
+) -> Literal["query", "accessions"]:
+    if not isinstance(config, NcbiInputConfig):
+        raise ValueError("NCBI acquisition requires an NcbiInputConfig.")
+    has_query = isinstance(config.query, str) and bool(config.query.strip())
     accessions = config.accessions
-    if (
-        not isinstance(accessions, tuple)
-        or not accessions
-        or any(not isinstance(accession, str) or not accession.strip() for accession in accessions)
+    has_accessions = isinstance(accessions, tuple) and bool(accessions)
+    if config.frozen_dataset is not None or has_query == has_accessions:
+        raise ValueError(
+            "NCBI acquisition requires exactly one query or accession source."
+        )
+    if config.query is not None and not has_query:
+        raise ValueError("NCBI query acquisition requires a non-blank query.")
+    if has_accessions and (
+        any(not isinstance(accession, str) or not accession.strip() for accession in accessions)
         or len(set(accessions)) != len(accessions)
     ):
         raise ValueError(
             "NCBI accession acquisition requires a non-empty tuple of unique non-blank accessions."
         )
-    if (
-        config.query is not None
-        or config.frozen_dataset is not None
-        or config.max_records is not None
-    ):
+    if has_accessions and config.max_records is not None:
         raise ValueError(
-            "NCBI accession acquisition cannot combine accessions with query, "
-            "frozen_dataset, or max_records."
+            "NCBI accession acquisition cannot specify max_records."
         )
-    _validate_accession_config_integer(
+    _validate_config_integer(
         config.batch_size, "batch_size", minimum=1, maximum=500
     )
-    _validate_accession_config_integer(config.retries, "retries", minimum=0, maximum=10)
+    _validate_config_integer(config.retries, "retries", minimum=0, maximum=10)
+    if has_query and config.max_records is not None:
+        if (
+            isinstance(config.max_records, bool)
+            or not isinstance(config.max_records, int)
+            or config.max_records < 1
+        ):
+            raise ValueError("NCBI query acquisition max_records must be a positive integer.")
+    return "query" if has_query else "accessions"
 
 
-def _validate_accession_config_integer(
+def _validate_config_integer(
     value: object, name: str, *, minimum: int, maximum: int
 ) -> None:
     if (
@@ -216,16 +458,16 @@ def _validate_accession_config_integer(
         or value > maximum
     ):
         raise ValueError(
-            f"NCBI accession acquisition {name} must be between {minimum} and {maximum}."
+            f"NCBI acquisition {name} must be between {minimum} and {maximum}."
         )
 
 
 def _planned_batches(
-    accessions: tuple[str, ...], batch_size: int
+    identifiers: tuple[str, ...], batch_size: int
 ) -> tuple[tuple[str, ...], ...]:
     return tuple(
-        accessions[index : index + batch_size]
-        for index in range(0, len(accessions), batch_size)
+        identifiers[index : index + batch_size]
+        for index in range(0, len(identifiers), batch_size)
     )
 
 
@@ -251,24 +493,100 @@ def _initial_accession_manifest(
     }
 
 
-def _load_or_create_accession_manifest(
-    manifest_path: Path, *, config: NcbiInputConfig, clock: Callable[[], str]
+def _initial_query_manifest(
+    config: NcbiInputConfig,
+    resolution: ResolvedNcbiQuery,
+    clock: Callable[[], str],
 ) -> dict[str, object]:
-    if not manifest_path.exists():
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "PARTIAL",
+        "source": {
+            "mode": "query",
+            "database": "nuccore",
+            "query": config.query,
+            "resolved_uids": list(resolution.uids),
+            "reported_count": resolution.reported_count,
+            "selected_count": len(resolution.uids),
+            "max_records": config.max_records,
+            "query_translation": resolution.query_translation,
+        },
+        "batch_size": config.batch_size,
+        "retries": config.retries,
+        "resolved_entries": [],
+        "completed_batches": [],
+        "consolidated": None,
+        "created_at": clock(),
+        "updated_at": clock(),
+        "tool": "geison-qpcr",
+    }
+
+
+def _load_or_create_manifest(
+    manifest_path: Path,
+    *,
+    config: NcbiInputConfig,
+    client: NcbiClient,
+    sleep: Callable[[float], object],
+    clock: Callable[[], str],
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    if manifest_path.exists():
+        manifest = _read_manifest(manifest_path)
+        _validate_resumable_manifest(manifest, config)
+        source = manifest["source"]
+        assert isinstance(source, dict)
+        if source["mode"] == "query":
+            resolved_uids = source["resolved_uids"]
+            assert isinstance(resolved_uids, list)
+            return manifest, tuple(resolved_uids)
+        return manifest, config.accessions
+
+    if config.query is None:
         manifest = _initial_accession_manifest(config, clock)
-        _write_json_atomic(manifest_path, manifest)
-        return manifest
+        identifiers = config.accessions
+    else:
+        resolution = _with_retries(
+            lambda: client.resolve_query(config.query, config.max_records),
+            config.retries,
+            sleep,
+        )
+        _validate_query_resolution(resolution, config.max_records)
+        manifest = _initial_query_manifest(config, resolution, clock)
+        identifiers = resolution.uids
+    _write_json_atomic(manifest_path, manifest)
+    return manifest, identifiers
 
-    manifest = _read_manifest(manifest_path)
-    _validate_resumable_accession_manifest(manifest, config)
-    return manifest
+
+def _validate_query_resolution(
+    resolution: object, max_records: int | None
+) -> None:
+    if not isinstance(resolution, ResolvedNcbiQuery):
+        raise ValueError("NCBI query resolution has an invalid composition.")
+    if (
+        isinstance(resolution.reported_count, bool)
+        or not isinstance(resolution.reported_count, int)
+        or resolution.reported_count < 0
+    ):
+        raise ValueError("NCBI query resolution count or UID composition is invalid.")
+    selected_count = min(
+        resolution.reported_count,
+        max_records if max_records is not None else resolution.reported_count,
+    )
+    if (
+        not isinstance(resolution.uids, tuple)
+        or any(not isinstance(uid, str) or not uid for uid in resolution.uids)
+        or len(set(resolution.uids)) != len(resolution.uids)
+        or len(resolution.uids) != selected_count
+        or not isinstance(resolution.query_translation, str)
+    ):
+        raise ValueError("NCBI query resolution count or UID composition is invalid.")
 
 
-def _validate_resumable_accession_manifest(
+def _validate_resumable_manifest(
     manifest: dict[str, object], config: NcbiInputConfig
 ) -> None:
-    unknown_fields = set(manifest) - _ACCESSION_MANIFEST_FIELDS
-    missing_fields = _ACCESSION_MANIFEST_FIELDS - set(manifest)
+    unknown_fields = set(manifest) - _MANIFEST_FIELDS
+    missing_fields = _MANIFEST_FIELDS - set(manifest)
     if unknown_fields:
         raise ValueError(
             "NCBI dataset manifest has unrecognized fields: "
@@ -280,11 +598,6 @@ def _validate_resumable_accession_manifest(
             f"{', '.join(sorted(missing_fields))}."
         )
 
-    expected_source = {
-        "mode": "accessions",
-        "database": "nuccore",
-        "requested_accessions": list(config.accessions),
-    }
     schema_version = manifest["schema_version"]
     if (
         isinstance(schema_version, bool)
@@ -292,10 +605,7 @@ def _validate_resumable_accession_manifest(
         or schema_version != SCHEMA_VERSION
     ):
         raise ValueError("NCBI dataset manifest schema does not support acquisition resume.")
-    if manifest["source"] != expected_source:
-        raise ValueError(
-            "NCBI dataset manifest source does not match the requested accessions."
-        )
+    _validate_resumable_source(manifest["source"], config)
     if (
         isinstance(manifest["batch_size"], bool)
         or not isinstance(manifest["batch_size"], int)
@@ -325,6 +635,68 @@ def _validate_resumable_accession_manifest(
         raise ValueError("NCBI dataset manifest resolved_entries must be a list.")
 
 
+def _validate_resumable_source(source: object, config: NcbiInputConfig) -> None:
+    if config.query is None:
+        expected_source = {
+            "mode": "accessions",
+            "database": "nuccore",
+            "requested_accessions": list(config.accessions),
+        }
+        if source != expected_source:
+            raise ValueError(
+                "NCBI dataset manifest source does not match the requested accessions."
+            )
+        return
+
+    expected_fields = {
+        "mode",
+        "database",
+        "query",
+        "resolved_uids",
+        "reported_count",
+        "selected_count",
+        "max_records",
+        "query_translation",
+    }
+    if not isinstance(source, dict) or set(source) != expected_fields:
+        raise ValueError("NCBI dataset manifest source is not a canonical query source.")
+    if (
+        source["mode"] != "query"
+        or source["database"] != "nuccore"
+        or source["query"] != config.query
+        or (
+            config.max_records is None
+            and source["max_records"] is not None
+        )
+        or (
+            config.max_records is not None
+            and (
+                isinstance(source["max_records"], bool)
+                or not isinstance(source["max_records"], int)
+                or source["max_records"] != config.max_records
+            )
+        )
+    ):
+        raise ValueError("NCBI dataset manifest source does not match this query configuration.")
+    resolution = ResolvedNcbiQuery(
+        uids=tuple(source["resolved_uids"])
+        if isinstance(source["resolved_uids"], list)
+        else (),
+        reported_count=source["reported_count"],
+        query_translation=source["query_translation"],
+    )
+    try:
+        _validate_query_resolution(resolution, config.max_records)
+    except ValueError:
+        raise ValueError("NCBI dataset manifest query source composition is invalid.") from None
+    if (
+        isinstance(source["selected_count"], bool)
+        or not isinstance(source["selected_count"], int)
+        or source["selected_count"] != len(resolution.uids)
+    ):
+        raise ValueError("NCBI dataset manifest query source selected_count is invalid.")
+
+
 def _validate_manifest_timestamp(value: object, field: str) -> None:
     if not isinstance(value, str):
         raise ValueError(f"NCBI dataset manifest {field} must be a UTC timestamp.")
@@ -342,6 +714,7 @@ def _validated_cached_batches(
     manifest: dict[str, object],
     directory: Path,
     batches: tuple[tuple[str, ...], ...],
+    identifier_kind: Literal["uid", "accession"],
 ) -> tuple[dict[int, dict[str, object]], bool]:
     completed = manifest["completed_batches"]
     assert isinstance(completed, list)
@@ -357,7 +730,9 @@ def _validated_cached_batches(
         if len(candidates) != 1:
             continue
         metadata = candidates[0]
-        if _cached_batch_is_valid(directory, metadata, requested_identifiers):
+        if _cached_batch_is_valid(
+            directory, metadata, requested_identifiers, identifier_kind
+        ):
             valid[batch_index] = metadata
 
     expected_metadata = [valid[index] for index in range(len(batches)) if index in valid]
@@ -374,6 +749,7 @@ def _cached_batch_is_valid(
     directory: Path,
     metadata: dict[str, object],
     requested_identifiers: tuple[str, ...],
+    identifier_kind: Literal["uid", "accession"],
 ) -> bool:
     filename = metadata.get("filename")
     requested = metadata.get("requested_identifiers")
@@ -409,7 +785,9 @@ def _cached_batch_is_valid(
         return False
     if len(records) != record_count:
         return False
-    return resolved_entries == _resolved_entries(requested_identifiers, records)
+    return resolved_entries == _resolved_entries(
+        requested_identifiers, records, identifier_kind
+    )
 
 
 def _is_exact_string_list(value: object, expected: tuple[str, ...]) -> bool:
@@ -452,6 +830,7 @@ def _write_batch_atomically(
     batch_index: int,
     requested_identifiers: tuple[str, ...],
     records: tuple[SeqRecord, ...],
+    identifier_kind: Literal["uid", "accession"],
 ) -> dict[str, object]:
     filename = _batch_filename(batch_index)
     path = batches_directory / filename
@@ -466,7 +845,13 @@ def _write_batch_atomically(
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
-    return _batch_metadata(filename, requested_identifiers, parsed_records, contents)
+    return _batch_metadata(
+        filename,
+        requested_identifiers,
+        parsed_records,
+        contents,
+        identifier_kind,
+    )
 
 
 def _batch_filename(batch_index: int) -> str:
@@ -478,6 +863,7 @@ def _batch_metadata(
     requested_identifiers: tuple[str, ...],
     records: tuple[SeqRecord, ...],
     contents: bytes,
+    identifier_kind: Literal["uid", "accession"],
 ) -> dict[str, object]:
     return {
         "filename": filename,
@@ -486,21 +872,25 @@ def _batch_metadata(
         "byte_size": len(contents),
         "sha256": _sha256_bytes(contents),
         "record_ids": [record.id for record in records],
-        "resolved_entries": _resolved_entries(requested_identifiers, records),
+        "resolved_entries": _resolved_entries(
+            requested_identifiers, records, identifier_kind
+        ),
     }
 
 
 def _resolved_entries(
-    requested_identifiers: tuple[str, ...], records: tuple[SeqRecord, ...]
+    requested_identifiers: tuple[str, ...],
+    records: tuple[SeqRecord, ...],
+    identifier_kind: Literal["uid", "accession"],
 ) -> list[dict[str, object]]:
     return [
         {
-            "requested_accession": requested_accession,
-            "uid": None,
+            "requested_accession": identifier if identifier_kind == "accession" else None,
+            "uid": identifier if identifier_kind == "uid" else None,
             "accession": re.sub(r"\.\d+$", "", record.id),
             "accession_version": record.id,
         }
-        for requested_accession, record in zip(requested_identifiers, records, strict=True)
+        for identifier, record in zip(requested_identifiers, records, strict=True)
     ]
 
 
@@ -536,6 +926,7 @@ def _write_consolidated_dataset(
     directory: Path,
     batches: tuple[tuple[str, ...], ...],
     valid_batches: dict[int, dict[str, object]],
+    identifier_kind: Literal["uid", "accession"],
 ) -> None:
     records: list[SeqRecord] = []
     for batch_index in range(len(batches)):
@@ -546,8 +937,12 @@ def _write_consolidated_dataset(
         records.extend(parsed_records)
     records_tuple = tuple(records)
     expected_entries = _resolved_entries_from_batches(batches, valid_batches)
+    requested_identifiers = tuple(
+        entry["uid"] if identifier_kind == "uid" else entry["requested_accession"]
+        for entry in expected_entries
+    )
     if _resolved_entries(
-        tuple(entry["requested_accession"] for entry in expected_entries), records_tuple
+        requested_identifiers, records_tuple, identifier_kind
     ) != expected_entries:
         raise ValueError("Validated NCBI batch metadata no longer matches its records.")
 
