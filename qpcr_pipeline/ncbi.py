@@ -16,7 +16,7 @@ from weakref import WeakKeyDictionary
 from Bio import Entrez, SeqIO
 from Bio.SeqRecord import SeqRecord
 
-from qpcr_pipeline.config import NcbiInputConfig
+from qpcr_pipeline.config import NcbiInputConfig, validate_ncbi_input_config
 
 
 MANIFEST_NAME = "dataset_manifest.json"
@@ -27,6 +27,7 @@ _BATCH_FILENAME_FORMAT = "batch-{index:05d}.gb"
 _ENTREZ_LOCKS_GUARD = threading.Lock()
 _ENTREZ_REQUEST_LOCKS = WeakKeyDictionary()
 _ENTREZ_FALLBACK_LOCK = threading.Lock()
+_MISSING_ATTRIBUTE = object()
 _MANIFEST_FIELDS = frozenset(
     {
         "schema_version",
@@ -41,6 +42,38 @@ _MANIFEST_FIELDS = frozenset(
         "updated_at",
         "tool",
     }
+)
+_ACCESSION_SOURCE_FIELDS = frozenset(
+    {"mode", "database", "requested_accessions"}
+)
+_QUERY_SOURCE_FIELDS = frozenset(
+    {
+        "mode",
+        "database",
+        "query",
+        "resolved_uids",
+        "reported_count",
+        "selected_count",
+        "max_records",
+        "query_translation",
+    }
+)
+_RESOLVED_ENTRY_FIELDS = frozenset(
+    {"requested_accession", "uid", "accession", "accession_version"}
+)
+_COMPLETED_BATCH_FIELDS = frozenset(
+    {
+        "filename",
+        "requested_identifiers",
+        "record_count",
+        "byte_size",
+        "sha256",
+        "record_ids",
+        "resolved_entries",
+    }
+)
+_CONSOLIDATED_FIELDS = frozenset(
+    {"filename", "record_count", "byte_size", "sha256"}
 )
 
 
@@ -190,16 +223,39 @@ class BioEntrezClient:
         setattr(self.entrez_module, "tool", "geison-qpcr")
         setattr(self.entrez_module, "api_key", self.api_key)
 
+    def _create_request_handle(self, operation: Callable[[], object]) -> object:
+        with self._request_lock:
+            self._configure()
+            previous_max_tries = getattr(
+                self.entrez_module, "max_tries", _MISSING_ATTRIBUTE
+            )
+            previous_sleep = getattr(
+                self.entrez_module, "sleep_between_tries", _MISSING_ATTRIBUTE
+            )
+            try:
+                setattr(self.entrez_module, "max_tries", 1)
+                setattr(self.entrez_module, "sleep_between_tries", 0)
+                return operation()
+            finally:
+                if previous_max_tries is _MISSING_ATTRIBUTE:
+                    delattr(self.entrez_module, "max_tries")
+                else:
+                    setattr(self.entrez_module, "max_tries", previous_max_tries)
+                if previous_sleep is _MISSING_ATTRIBUTE:
+                    delattr(self.entrez_module, "sleep_between_tries")
+                else:
+                    setattr(self.entrez_module, "sleep_between_tries", previous_sleep)
+
     def _search_page(self, query: str, *, retstart: int, retmax: int) -> object:
         def acquire_handle() -> object:
-            with self._request_lock:
-                self._configure()
-                return self.entrez_module.esearch(
+            return self._create_request_handle(
+                lambda: self.entrez_module.esearch(
                     db="nuccore",
                     term=query,
                     retstart=retstart,
                     retmax=retmax,
                 )
+            )
 
         handle = _run_entrez_request(acquire_handle)
         try:
@@ -209,14 +265,14 @@ class BioEntrezClient:
 
     def _fetch_genbank(self, identifiers: tuple[str, ...]) -> tuple[SeqRecord, ...]:
         def acquire_handle() -> object:
-            with self._request_lock:
-                self._configure()
-                return self.entrez_module.efetch(
+            return self._create_request_handle(
+                lambda: self.entrez_module.efetch(
                     db="nuccore",
                     id=",".join(identifiers),
                     rettype="gb",
                     retmode="text",
                 )
+            )
 
         handle = _run_entrez_request(acquire_handle)
         try:
@@ -437,63 +493,10 @@ def acquire_ncbi_dataset(
 def _validate_acquisition_config(
     config: NcbiInputConfig,
 ) -> Literal["query", "accessions"]:
-    if not isinstance(config, NcbiInputConfig):
-        raise ValueError("NCBI acquisition requires an NcbiInputConfig.")
-    if config.query is not None and (
-        not isinstance(config.query, str) or not config.query.strip()
-    ):
-        raise ValueError("NCBI query acquisition requires a non-blank query.")
-    accessions = config.accessions
-    if not isinstance(accessions, tuple):
-        raise ValueError("NCBI accession acquisition accessions must be a tuple.")
-    if any(
-        not isinstance(accession, str) or not accession.strip()
-        for accession in accessions
-    ) or len(set(accessions)) != len(accessions):
-        raise ValueError(
-            "NCBI accession acquisition requires unique non-blank accessions."
-        )
-    has_query = config.query is not None
-    has_accessions = bool(accessions)
-    source_count = sum(
-        (has_query, has_accessions, config.frozen_dataset is not None)
-    )
-    if source_count != 1:
-        raise ValueError(
-            "NCBI acquisition requires exactly one query or accession source."
-        )
-    if config.frozen_dataset is not None:
+    source_mode = validate_ncbi_input_config(config)
+    if source_mode == "frozen":
         raise ValueError("NCBI acquisition cannot acquire a frozen_dataset source.")
-    if has_accessions and config.max_records is not None:
-        raise ValueError(
-            "NCBI accession acquisition cannot specify max_records."
-        )
-    _validate_config_integer(
-        config.batch_size, "batch_size", minimum=1, maximum=500
-    )
-    _validate_config_integer(config.retries, "retries", minimum=0, maximum=10)
-    if has_query and config.max_records is not None:
-        if (
-            isinstance(config.max_records, bool)
-            or not isinstance(config.max_records, int)
-            or config.max_records < 1
-        ):
-            raise ValueError("NCBI query acquisition max_records must be a positive integer.")
-    return "query" if has_query else "accessions"
-
-
-def _validate_config_integer(
-    value: object, name: str, *, minimum: int, maximum: int
-) -> None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < minimum
-        or value > maximum
-    ):
-        raise ValueError(
-            f"NCBI acquisition {name} must be between {minimum} and {maximum}."
-        )
+    return source_mode
 
 
 def _planned_batches(
@@ -1040,25 +1043,75 @@ def validate_frozen_dataset(dataset_dir: str | Path) -> AcquiredNcbiDataset:
         raise ValueError(f"NCBI dataset manifest '{MANIFEST_NAME}' is missing.")
 
     manifest = _read_manifest(manifest_path)
-    _validate_manifest_header(manifest)
-    consolidated = _consolidated_metadata(manifest)
-    _validate_consolidated_filename(consolidated)
+    _require_exact_fields(manifest, _MANIFEST_FIELDS, "manifest")
+    _validate_complete_manifest_header(manifest)
+    identifier_kind, identifiers = _validate_complete_source(manifest["source"])
+    resolved_entries, accession_versions = _validate_complete_resolved_entries(
+        manifest["resolved_entries"], identifiers, identifier_kind, "resolved_entries"
+    )
+    _validate_complete_batches(
+        directory,
+        manifest["completed_batches"],
+        identifiers,
+        resolved_entries,
+        accession_versions,
+        identifier_kind,
+        manifest["batch_size"],
+    )
+    consolidated = _validate_complete_consolidated(
+        manifest["consolidated"], len(identifiers)
+    )
 
     if not records_path.is_file():
         raise ValueError(f"NCBI dataset records file '{RECORDS_NAME}' is missing.")
     record_bytes = records_path.read_bytes()
-    _validate_byte_size(consolidated, len(record_bytes))
-    _validate_sha256(consolidated, record_bytes)
-
-    record_ids = _parse_record_ids(records_path)
-    _validate_record_count(consolidated, len(record_ids))
-    _validate_resolved_entry_order(manifest, record_ids)
+    _validate_artifact_bytes(
+        consolidated, record_bytes, "consolidated", RECORDS_NAME
+    )
+    records = _parse_genbank_records(records_path)
+    record_ids = tuple(record.id for record in records)
+    if len(records) != consolidated["record_count"]:
+        raise ValueError(
+            "NCBI dataset manifest field 'consolidated.record_count' does not match "
+            f"'{RECORDS_NAME}'."
+        )
+    if record_ids != accession_versions:
+        raise ValueError(
+            "NCBI dataset manifest field 'resolved_entries[*].accession_version' "
+            "does not match the records.gb order."
+        )
 
     return AcquiredNcbiDataset(records_path=records_path, manifest_path=manifest_path)
 
 
-def _validate_manifest_header(manifest: dict[str, object]) -> None:
-    schema_version = manifest.get("schema_version")
+def _require_exact_fields(
+    value: object, expected: frozenset[str], field_path: str
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"NCBI dataset manifest field '{field_path}' must be an object.")
+    unknown = set(value) - expected
+    if unknown:
+        rendered = ", ".join(
+            f"{field_path}.{field}" if field_path != "manifest" else str(field)
+            for field in sorted(unknown)
+        )
+        raise ValueError(
+            f"NCBI dataset manifest field(s) '{rendered}' are unrecognized."
+        )
+    missing = expected - set(value)
+    if missing:
+        rendered = ", ".join(
+            f"{field_path}.{field}" if field_path != "manifest" else str(field)
+            for field in sorted(missing)
+        )
+        raise ValueError(
+            f"NCBI dataset manifest field(s) '{rendered}' are required."
+        )
+    return value
+
+
+def _validate_complete_manifest_header(manifest: dict[str, object]) -> None:
+    schema_version = manifest["schema_version"]
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
@@ -1068,115 +1121,382 @@ def _validate_manifest_header(manifest: dict[str, object]) -> None:
             "NCBI dataset manifest field 'schema_version' is unsupported: "
             f"expected {SCHEMA_VERSION}."
         )
-    if manifest.get("status") != "COMPLETE":
+    if manifest["status"] != "COMPLETE":
         raise ValueError("NCBI dataset manifest field 'status' must be 'COMPLETE'.")
+    if manifest["tool"] != "geison-qpcr":
+        raise ValueError(
+            "NCBI dataset manifest field 'tool' must be 'geison-qpcr'."
+        )
+    _validate_manifest_timestamp(manifest["created_at"], "created_at")
+    _validate_manifest_timestamp(manifest["updated_at"], "updated_at")
+    _validate_manifest_integer(
+        manifest["batch_size"], "batch_size", minimum=1, maximum=500
+    )
+    _validate_manifest_integer(
+        manifest["retries"], "retries", minimum=0, maximum=10
+    )
+    if not isinstance(manifest["consolidated"], dict):
+        raise ValueError(
+            "NCBI COMPLETE dataset manifest field 'consolidated' must be an object."
+        )
 
 
-def _consolidated_metadata(manifest: dict[str, object]) -> dict[str, object]:
-    consolidated = manifest.get("consolidated")
-    if not isinstance(consolidated, dict):
-        raise ValueError("NCBI dataset manifest field 'consolidated' must be an object.")
-    return consolidated
+def _validate_manifest_integer(
+    value: object,
+    field_path: str,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or (maximum is not None and value > maximum)
+    ):
+        if maximum is None:
+            bounds = f"at least {minimum}"
+        else:
+            bounds = f"between {minimum} and {maximum}"
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}' must be an integer {bounds}."
+        )
+    return value
 
 
-def _validate_consolidated_filename(consolidated: dict[str, object]) -> None:
-    filename = consolidated.get("filename")
-    if filename != RECORDS_NAME:
+def _validate_complete_source(
+    value: object,
+) -> tuple[Literal["uid", "accession"], tuple[str, ...]]:
+    if not isinstance(value, dict):
+        raise ValueError("NCBI dataset manifest field 'source' must be an object.")
+    mode = value.get("mode")
+    if mode == "accessions":
+        source = _require_exact_fields(value, _ACCESSION_SOURCE_FIELDS, "source")
+        if source["database"] != "nuccore":
+            raise ValueError(
+                "NCBI dataset manifest field 'source.database' must be 'nuccore'."
+            )
+        requested = _validate_string_list(
+            source["requested_accessions"],
+            "source.requested_accessions",
+            allow_empty=False,
+            require_unique=True,
+        )
+        return "accession", requested
+    if mode == "query":
+        source = _require_exact_fields(value, _QUERY_SOURCE_FIELDS, "source")
+        if source["database"] != "nuccore":
+            raise ValueError(
+                "NCBI dataset manifest field 'source.database' must be 'nuccore'."
+            )
+        if not isinstance(source["query"], str) or not source["query"].strip():
+            raise ValueError(
+                "NCBI dataset manifest field 'source.query' must be a non-blank string."
+            )
+        uids = _validate_string_list(
+            source["resolved_uids"],
+            "source.resolved_uids",
+            allow_empty=True,
+            require_unique=True,
+        )
+        reported_count = _validate_manifest_integer(
+            source["reported_count"], "source.reported_count", minimum=0
+        )
+        selected_count = _validate_manifest_integer(
+            source["selected_count"], "source.selected_count", minimum=0
+        )
+        maximum = source["max_records"]
+        if maximum is not None:
+            maximum = _validate_manifest_integer(
+                maximum, "source.max_records", minimum=1
+            )
+        if not isinstance(source["query_translation"], str):
+            raise ValueError(
+                "NCBI dataset manifest field 'source.query_translation' must be a string."
+            )
+        expected_selected = min(
+            reported_count, maximum if maximum is not None else reported_count
+        )
+        if selected_count != len(uids) or selected_count != expected_selected:
+            raise ValueError(
+                "NCBI dataset manifest query source selected_count, reported_count, "
+                "max_records, and resolved_uids composition are inconsistent."
+            )
+        return "uid", uids
+    if "mode" not in value:
+        raise ValueError(
+            "NCBI dataset manifest field 'source.mode' is required."
+        )
+    raise ValueError(
+        "NCBI dataset manifest field 'source.mode' must be 'accessions' or 'query'."
+    )
+
+
+def _validate_string_list(
+    value: object,
+    field_path: str,
+    *,
+    allow_empty: bool,
+    require_unique: bool,
+) -> tuple[str, ...]:
+    if not isinstance(value, list) or (
+        not allow_empty and not value
+    ) or any(not isinstance(item, str) or not item.strip() for item in value):
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}' must be "
+            f"a {'possibly empty' if allow_empty else 'non-empty'} list of non-blank strings."
+        )
+    if require_unique and len(set(value)) != len(value):
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}' must contain unique strings."
+        )
+    return tuple(value)
+
+
+def _validate_complete_resolved_entries(
+    value: object,
+    identifiers: tuple[str, ...],
+    identifier_kind: Literal["uid", "accession"],
+    field_path: str,
+) -> tuple[list[dict[str, object]], tuple[str, ...]]:
+    if not isinstance(value, list):
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}' must be a list."
+        )
+    if len(value) != len(identifiers):
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}' does not match the source composition."
+        )
+
+    entries: list[dict[str, object]] = []
+    association_ids: list[str] = []
+    accession_versions: list[str] = []
+    for index, raw_entry in enumerate(value):
+        entry_path = f"{field_path}[{index}]"
+        entry = _require_exact_fields(
+            raw_entry, _RESOLVED_ENTRY_FIELDS, entry_path
+        )
+        requested_accession = entry["requested_accession"]
+        uid = entry["uid"]
+        if identifier_kind == "accession":
+            if not isinstance(requested_accession, str) or not requested_accession.strip():
+                raise ValueError(
+                    f"NCBI dataset manifest field '{entry_path}.requested_accession' "
+                    "must be a non-blank string for an accession source."
+                )
+            if uid is not None:
+                raise ValueError(
+                    f"NCBI dataset manifest field '{entry_path}.uid' must be null "
+                    "for an accession source."
+                )
+            association_ids.append(requested_accession)
+        else:
+            if requested_accession is not None:
+                raise ValueError(
+                    f"NCBI dataset manifest field '{entry_path}.requested_accession' "
+                    "must be null for a query source."
+                )
+            if not isinstance(uid, str) or not uid.strip():
+                raise ValueError(
+                    f"NCBI dataset manifest field '{entry_path}.uid' must be a "
+                    "non-blank string for a query source."
+                )
+            association_ids.append(uid)
+
+        accession = entry["accession"]
+        accession_version = entry["accession_version"]
+        if not isinstance(accession, str) or not accession.strip():
+            raise ValueError(
+                f"NCBI dataset manifest field '{entry_path}.accession' must be a "
+                "non-blank string."
+            )
+        if not isinstance(accession_version, str) or not accession_version.strip():
+            raise ValueError(
+                f"NCBI dataset manifest field '{entry_path}.accession_version' must be "
+                "a non-blank string."
+            )
+        if accession != re.sub(r"\.\d+$", "", accession_version):
+            raise ValueError(
+                f"NCBI dataset manifest field '{entry_path}.accession' does not match "
+                f"'{entry_path}.accession_version'."
+            )
+        entries.append(entry)
+        accession_versions.append(accession_version)
+
+    if tuple(association_ids) != identifiers:
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}' associations and "
+            "accession_version order do not match the source composition."
+        )
+    if len(set(accession_versions)) != len(accession_versions):
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}[*].accession_version' "
+            "must be unique."
+        )
+    return entries, tuple(accession_versions)
+
+
+def _validate_complete_batches(
+    directory: Path,
+    value: object,
+    identifiers: tuple[str, ...],
+    resolved_entries: list[dict[str, object]],
+    accession_versions: tuple[str, ...],
+    identifier_kind: Literal["uid", "accession"],
+    batch_size: object,
+) -> None:
+    if not isinstance(value, list):
+        raise ValueError(
+            "NCBI dataset manifest field 'completed_batches' must be a list."
+        )
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+        raise ValueError(
+            "NCBI dataset manifest field 'batch_size' must be an integer."
+        )
+    planned = _planned_batches(identifiers, batch_size)
+    if len(value) != len(planned):
+        raise ValueError(
+            "NCBI dataset manifest field 'completed_batches' does not cover the "
+            "complete source composition."
+        )
+
+    entry_offset = 0
+    for batch_index, expected_identifiers in enumerate(planned):
+        batch_path = f"completed_batches[{batch_index}]"
+        metadata = _require_exact_fields(
+            value[batch_index], _COMPLETED_BATCH_FIELDS, batch_path
+        )
+        expected_filename = _batch_filename(batch_index)
+        if metadata["filename"] != expected_filename:
+            raise ValueError(
+                f"NCBI dataset manifest field '{batch_path}.filename' must be "
+                f"'{expected_filename}'."
+            )
+        requested = _validate_string_list(
+            metadata["requested_identifiers"],
+            f"{batch_path}.requested_identifiers",
+            allow_empty=False,
+            require_unique=True,
+        )
+        if requested != expected_identifiers:
+            raise ValueError(
+                f"NCBI dataset manifest field '{batch_path}.requested_identifiers' "
+                "does not match the source composition."
+            )
+        record_count = _validate_manifest_integer(
+            metadata["record_count"], f"{batch_path}.record_count", minimum=0
+        )
+        if record_count != len(expected_identifiers):
+            raise ValueError(
+                f"NCBI dataset manifest field '{batch_path}.record_count' does not "
+                "match its requested identifiers."
+            )
+        _validate_manifest_integer(
+            metadata["byte_size"], f"{batch_path}.byte_size", minimum=0
+        )
+        _validate_checksum(metadata["sha256"], f"{batch_path}.sha256")
+        batch_entries, batch_versions = _validate_complete_resolved_entries(
+            metadata["resolved_entries"],
+            expected_identifiers,
+            identifier_kind,
+            f"{batch_path}.resolved_entries",
+        )
+        expected_entries = resolved_entries[
+            entry_offset : entry_offset + len(expected_identifiers)
+        ]
+        expected_versions = accession_versions[
+            entry_offset : entry_offset + len(expected_identifiers)
+        ]
+        if batch_entries != expected_entries:
+            raise ValueError(
+                f"NCBI dataset manifest field '{batch_path}.resolved_entries' does not "
+                "match the top-level resolved_entries composition."
+            )
+        record_ids = _validate_string_list(
+            metadata["record_ids"],
+            f"{batch_path}.record_ids",
+            allow_empty=False,
+            require_unique=True,
+        )
+        if record_ids != expected_versions or batch_versions != expected_versions:
+            raise ValueError(
+                f"NCBI dataset manifest field '{batch_path}.record_ids' does not match "
+                "its resolved_entries."
+            )
+
+        artifact_path = directory / _BATCH_DIRECTORY_NAME / expected_filename
+        if not artifact_path.is_file():
+            raise ValueError(
+                f"NCBI dataset batch file '{expected_filename}' is missing."
+            )
+        artifact_bytes = artifact_path.read_bytes()
+        _validate_artifact_bytes(
+            metadata, artifact_bytes, batch_path, expected_filename
+        )
+        parsed_records = _parse_genbank_records(artifact_path)
+        parsed_ids = tuple(record.id for record in parsed_records)
+        if len(parsed_records) != record_count:
+            raise ValueError(
+                f"NCBI dataset manifest field '{batch_path}.record_count' does not "
+                f"match '{expected_filename}'."
+            )
+        if parsed_ids != record_ids:
+            raise ValueError(
+                f"NCBI dataset manifest field '{batch_path}.record_ids' does not "
+                f"match '{expected_filename}'."
+            )
+        entry_offset += len(expected_identifiers)
+
+
+def _validate_complete_consolidated(
+    value: object, expected_count: int
+) -> dict[str, object]:
+    consolidated = _require_exact_fields(
+        value, _CONSOLIDATED_FIELDS, "consolidated"
+    )
+    if consolidated["filename"] != RECORDS_NAME:
         raise ValueError(
             "NCBI dataset manifest field 'consolidated.filename' must be "
             f"'{RECORDS_NAME}'."
         )
-
-
-def _validate_byte_size(consolidated: dict[str, object], actual_size: int) -> None:
-    expected_size = consolidated.get("byte_size")
-    if (
-        isinstance(expected_size, bool)
-        or not isinstance(expected_size, int)
-        or expected_size < 0
-    ):
-        raise ValueError(
-            "NCBI dataset manifest field 'consolidated.byte_size' must be a "
-            "non-negative integer."
-        )
-    if expected_size != actual_size:
-        raise ValueError(
-            "NCBI dataset manifest field 'consolidated.byte_size' does not match "
-            f"'{RECORDS_NAME}'."
-        )
-
-
-def _validate_sha256(consolidated: dict[str, object], record_bytes: bytes) -> None:
-    expected_checksum = consolidated.get("sha256")
-    if (
-        not isinstance(expected_checksum, str)
-        or len(expected_checksum) != 64
-        or any(character not in "0123456789abcdef" for character in expected_checksum)
-    ):
-        raise ValueError(
-            "NCBI dataset manifest field 'consolidated.sha256' must be a "
-            "lowercase SHA-256 digest."
-        )
-    if expected_checksum != _sha256_bytes(record_bytes):
-        raise ValueError(
-            "NCBI dataset manifest field 'consolidated.sha256' does not match "
-            f"'{RECORDS_NAME}'."
-        )
-
-
-def _parse_record_ids(records_path: Path) -> tuple[str, ...]:
-    try:
-        with records_path.open(encoding="utf-8") as handle:
-            return tuple(record.id for record in SeqIO.parse(handle, "genbank"))
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ValueError(
-            f"NCBI dataset records file '{RECORDS_NAME}' is not valid GenBank."
-        ) from error
-
-
-def _validate_record_count(consolidated: dict[str, object], actual_count: int) -> None:
-    expected_count = consolidated.get("record_count")
-    if (
-        isinstance(expected_count, bool)
-        or not isinstance(expected_count, int)
-        or expected_count < 0
-    ):
-        raise ValueError(
-            "NCBI dataset manifest field 'consolidated.record_count' must be a "
-            "non-negative integer."
-        )
-    if expected_count != actual_count:
+    record_count = _validate_manifest_integer(
+        consolidated["record_count"], "consolidated.record_count", minimum=0
+    )
+    if record_count != expected_count:
         raise ValueError(
             "NCBI dataset manifest field 'consolidated.record_count' does not match "
-            f"'{RECORDS_NAME}'."
+            "the source composition."
         )
+    _validate_manifest_integer(
+        consolidated["byte_size"], "consolidated.byte_size", minimum=0
+    )
+    _validate_checksum(consolidated["sha256"], "consolidated.sha256")
+    return consolidated
 
 
-def _validate_resolved_entry_order(
-    manifest: dict[str, object], record_ids: tuple[str, ...]
-) -> None:
-    entries = manifest.get("resolved_entries")
-    if not isinstance(entries, list):
-        raise ValueError("NCBI dataset manifest field 'resolved_entries' must be a list.")
-
-    accession_versions: list[str] = []
-    for index, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            raise ValueError(
-                "NCBI dataset manifest field "
-                f"'resolved_entries[{index}]' must be an object."
-            )
-        accession_version = entry.get("accession_version")
-        if not isinstance(accession_version, str) or not accession_version:
-            raise ValueError(
-                "NCBI dataset manifest field "
-                f"'resolved_entries[{index}].accession_version' must be a "
-                "non-empty string."
-            )
-        accession_versions.append(accession_version)
-
-    if tuple(accession_versions) != record_ids:
+def _validate_checksum(value: object, field_path: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
         raise ValueError(
-            "NCBI dataset manifest field 'resolved_entries[*].accession_version' "
-            "does not match the records.gb order."
+            f"NCBI dataset manifest field '{field_path}' must be a lowercase "
+            "SHA-256 digest."
+        )
+    return value
+
+
+def _validate_artifact_bytes(
+    metadata: dict[str, object], contents: bytes, field_path: str, filename: str
+) -> None:
+    if metadata["byte_size"] != len(contents):
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}.byte_size' does not match "
+            f"'{filename}'."
+        )
+    if metadata["sha256"] != _sha256_bytes(contents):
+        raise ValueError(
+            f"NCBI dataset manifest field '{field_path}.sha256' does not match "
+            f"'{filename}'."
         )

@@ -26,10 +26,17 @@ class RunSummary:
 def run_pipeline(
     config: PipelineConfig, outdir: str | Path, *, ncbi_client: NcbiClient | None = None
 ) -> RunSummary:
+    selected_input = config.selected_input
     output_dir = Path(outdir)
+    if (
+        isinstance(selected_input, NcbiInputConfig)
+        and selected_input.frozen_dataset is not None
+    ):
+        _reject_output_inside_frozen_dataset(
+            output_dir, selected_input.frozen_dataset
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    selected_input = config.selected_input
     if isinstance(selected_input, NcbiInputConfig):
         if selected_input.frozen_dataset is not None:
             acquired = validate_frozen_dataset(selected_input.frozen_dataset)
@@ -75,15 +82,44 @@ def run_pipeline(
         "evaluation_set": {"sequence_ids": list(approved_ids)},
     }
 
-    (output_dir / "run_summary.json").write_text(
-        json.dumps(asdict(summary), indent=2) + "\n",
-        encoding="utf-8",
+    _write_json_atomic(
+        output_dir / "run_summary.json", asdict(summary)
     )
-    (output_dir / "qc_report.json").write_text(
-        json.dumps(qc_report, indent=2) + "\n",
-        encoding="utf-8",
+    _write_json_atomic(
+        output_dir / "qc_report.json", qc_report
     )
     return summary
+
+
+def _reject_output_inside_frozen_dataset(output_dir: Path, frozen_dir: Path) -> None:
+    resolved_output = output_dir.resolve()
+    resolved_frozen = frozen_dir.resolve()
+    try:
+        resolved_output.relative_to(resolved_frozen)
+    except ValueError:
+        return
+    raise ValueError(
+        "Pipeline output directory must not equal or be inside the frozen dataset directory."
+    )
+
+
+def _write_json_atomic(destination: Path, value: object) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.close(descriptor)
+        temporary.write_text(
+            json.dumps(value, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _copy_effective_manifest(source: Path, destination: Path) -> None:

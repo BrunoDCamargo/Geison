@@ -35,6 +35,7 @@ class PipelineConfig:
     def selected_input(
         self,
     ) -> tuple[Path, Literal["fasta", "genbank"]] | NcbiInputConfig:
+        validate_pipeline_config(self)
         if self.input_fasta is not None:
             return self.input_fasta, "fasta"
         if self.input_genbank is not None:
@@ -61,13 +62,7 @@ def load_config(path: str | Path) -> PipelineConfig:
     input_fasta = _optional_path(input_config, "fasta")
     input_genbank = _optional_path(input_config, "genbank")
     input_ncbi = _parse_ncbi_input(input_config["ncbi"]) if "ncbi" in input_config else None
-    input_sources = sum(
-        source is not None for source in (input_fasta, input_genbank, input_ncbi)
-    )
-    if input_sources != 1:
-        raise ValueError("Exactly one local sequence input must be configured.")
-
-    return PipelineConfig(
+    config = PipelineConfig(
         target_name=target_name,
         input_fasta=input_fasta,
         input_genbank=input_genbank,
@@ -79,6 +74,118 @@ def load_config(path: str | Path) -> PipelineConfig:
             length_tolerance_fraction=_optional_number(qc_config, "length_tolerance_fraction"),
         ),
     )
+    validate_pipeline_config(config)
+    return config
+
+
+def validate_pipeline_config(config: PipelineConfig) -> None:
+    """Validate a parsed or directly constructed pipeline configuration."""
+    if not isinstance(config, PipelineConfig):
+        raise ValueError("Pipeline configuration must be a PipelineConfig.")
+    if not isinstance(config.target_name, str) or not config.target_name.strip():
+        raise ValueError("Pipeline target_name must be a non-empty string.")
+    for field_name, path in (
+        ("input_fasta", config.input_fasta),
+        ("input_genbank", config.input_genbank),
+    ):
+        if path is not None and not isinstance(path, Path):
+            raise ValueError(f"Pipeline {field_name} must be a Path when configured.")
+    if config.input_ncbi is not None and not isinstance(
+        config.input_ncbi, NcbiInputConfig
+    ):
+        raise ValueError("Pipeline input_ncbi must be an NcbiInputConfig when configured.")
+    source_count = sum(
+        source is not None
+        for source in (config.input_fasta, config.input_genbank, config.input_ncbi)
+    )
+    if source_count != 1:
+        raise ValueError(
+            "Exactly one local sequence input or NCBI input must be configured. "
+            "Exactly one sequence input is allowed."
+        )
+    if not isinstance(config.qc, QCConfig):
+        raise ValueError("Pipeline qc must be a QCConfig.")
+    if config.input_ncbi is not None:
+        validate_ncbi_input_config(config.input_ncbi)
+
+
+def validate_ncbi_input_config(
+    config: NcbiInputConfig,
+) -> Literal["query", "accessions", "frozen"]:
+    """Validate NCBI input regardless of whether it came from YAML or Python."""
+    if not isinstance(config, NcbiInputConfig):
+        raise ValueError("NCBI input must be an NcbiInputConfig.")
+
+    query = config.query
+    if query is not None and (not isinstance(query, str) or not query.strip()):
+        raise ValueError("NCBI input query must be a non-blank string.")
+    if not isinstance(config.accessions, tuple):
+        raise ValueError("NCBI input accessions must be a tuple.")
+    if any(
+        not isinstance(accession, str) or not accession.strip()
+        for accession in config.accessions
+    ):
+        raise ValueError("NCBI input accessions must contain only non-blank strings.")
+    if len(set(config.accessions)) != len(config.accessions):
+        raise ValueError("NCBI input accessions must be unique.")
+    if config.frozen_dataset is not None and not isinstance(
+        config.frozen_dataset, Path
+    ):
+        raise ValueError("NCBI input frozen_dataset must be a Path.")
+
+    has_query = query is not None
+    has_accessions = bool(config.accessions)
+    has_frozen = config.frozen_dataset is not None
+    if sum((has_query, has_accessions, has_frozen)) != 1:
+        raise ValueError(
+            "NCBI input must specify exactly one query, accession list, or frozen_dataset."
+        )
+
+    _validate_ncbi_config_integer(
+        config.batch_size, "batch_size", minimum=1, maximum=500
+    )
+    _validate_ncbi_config_integer(config.retries, "retries", minimum=0, maximum=10)
+    if config.max_records is not None and (
+        isinstance(config.max_records, bool)
+        or not isinstance(config.max_records, int)
+        or config.max_records < 1
+    ):
+        raise ValueError("NCBI input max_records must be a positive integer.")
+    if has_frozen:
+        if config.batch_size != 100:
+            raise ValueError(
+                "NCBI frozen_dataset input cannot override the default batch_size."
+            )
+        if config.retries != 3:
+            raise ValueError(
+                "NCBI frozen_dataset input cannot override the default retries."
+            )
+        if config.max_records is not None:
+            raise ValueError("NCBI frozen_dataset input cannot specify max_records.")
+    elif config.max_records is not None and not has_query:
+        raise ValueError(
+            "NCBI accession input cannot specify max_records; it is only valid with a query."
+        )
+
+    if has_query:
+        return "query"
+    if has_accessions:
+        return "accessions"
+    return "frozen"
+
+
+def _validate_ncbi_config_integer(
+    value: object, field_name: str, *, minimum: int, maximum: int
+) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or value > maximum
+    ):
+        raise ValueError(
+            f"NCBI input {field_name} must be an integer between {minimum} and {maximum}."
+        )
 
 
 def _mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:
@@ -108,6 +215,21 @@ def _parse_ncbi_input(raw: Any) -> NcbiInputConfig:
     if not isinstance(raw, dict):
         raise ValueError("Configuration section 'input.ncbi' must be a mapping.")
 
+    allowed_fields = {
+        "query",
+        "accessions",
+        "frozen_dataset",
+        "batch_size",
+        "retries",
+        "max_records",
+    }
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted((str(field) for field in unknown_fields)))
+        raise ValueError(
+            f"Configuration section 'input.ncbi' fields {rendered} are unrecognized."
+        )
+
     query = _optional_ncbi_string(raw, "query")
     accessions = _optional_accessions(raw)
     frozen_dataset = _optional_ncbi_path(raw, "frozen_dataset")
@@ -134,7 +256,7 @@ def _parse_ncbi_input(raw: Any) -> NcbiInputConfig:
             "Configuration value 'input.ncbi.max_records' is only valid with input.ncbi.query."
         )
 
-    return NcbiInputConfig(
+    config = NcbiInputConfig(
         query=query,
         accessions=accessions or (),
         frozen_dataset=frozen_dataset,
@@ -142,6 +264,8 @@ def _parse_ncbi_input(raw: Any) -> NcbiInputConfig:
         retries=retries,
         max_records=max_records,
     )
+    validate_ncbi_input_config(config)
+    return config
 
 
 def _optional_ncbi_string(raw: dict[str, Any], key: str) -> str | None:
