@@ -141,6 +141,65 @@ class MinimalPipelineRunTests(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertEqual(effective_manifest, source_manifest)
 
+    def _assert_frozen_manifest_destination_does_not_mutate_source(self, link):
+        accession = "NC_FROZEN.1"
+        record = self._ncbi_record(accession, "ACGTACGT")
+
+        class DatasetWriter:
+            def resolve_query(self, query, max_records):
+                raise AssertionError("query resolution was not expected")
+
+            def fetch_records(self, identifiers, *, identifier_kind):
+                return tuple(
+                    NcbiFetchedRecord(request_id=identifier, record=record)
+                    for identifier in identifiers
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            frozen_dir = tmp_path / "frozen"
+            acquire_ncbi_dataset(
+                NcbiInputConfig(accessions=(accession,)),
+                frozen_dir,
+                client=DatasetWriter(),
+                clock=lambda: "2026-08-21T00:00:00+00:00",
+            )
+            before = self._directory_bytes(frozen_dir)
+            source_manifest = (frozen_dir / "dataset_manifest.json").read_bytes()
+            outdir = tmp_path / "run"
+            outdir.mkdir()
+            destination = outdir / "ncbi_dataset_manifest.json"
+            link(frozen_dir / "records.gb", destination)
+
+            run_pipeline(
+                PipelineConfig(
+                    target_name="synthetic-target",
+                    input_ncbi=NcbiInputConfig(frozen_dataset=frozen_dir),
+                ),
+                outdir,
+            )
+
+            after = self._directory_bytes(frozen_dir)
+            effective_manifest = destination.read_bytes()
+
+        self.assertEqual(after, before)
+        self.assertEqual(effective_manifest, source_manifest)
+        self.assertEqual(json.loads(effective_manifest)["status"], "COMPLETE")
+
+    def test_run_replaces_hardlinked_frozen_manifest_destination(self):
+        self._assert_frozen_manifest_destination_does_not_mutate_source(
+            lambda source, destination: os.link(source, destination)
+        )
+
+    def test_run_replaces_symlinked_frozen_manifest_destination_when_supported(self):
+        def symlink(source, destination):
+            try:
+                destination.symlink_to(source)
+            except OSError as error:
+                self.skipTest(f"symlink creation is unavailable: {error}")
+
+        self._assert_frozen_manifest_destination_does_not_mutate_source(symlink)
+
     def test_run_creates_completed_summary_for_fixture(self):
         executable = shutil.which("qpcr-pipeline")
         self.assertIsNotNone(executable, "qpcr-pipeline console command is not installed")

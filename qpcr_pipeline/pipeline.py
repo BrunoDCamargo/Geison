@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -38,7 +40,9 @@ def run_pipeline(
                 client=ncbi_client,
             )
         records = load_genbank(acquired.records_path)
-        shutil.copyfile(acquired.manifest_path, output_dir / "ncbi_dataset_manifest.json")
+        _copy_effective_manifest(
+            acquired.manifest_path, output_dir / "ncbi_dataset_manifest.json"
+        )
     else:
         input_path, input_format = selected_input
         records = load_local_sequences(input_path, input_format)
@@ -80,3 +84,19 @@ def run_pipeline(
         encoding="utf-8",
     )
     return summary
+
+
+def _copy_effective_manifest(source: Path, destination: Path) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.close(descriptor)
+        shutil.copyfile(source, temporary)
+        temporary.replace(destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
