@@ -1282,6 +1282,61 @@ class FrozenDatasetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "resolved_entries.*accession_version"):
                 validate_frozen_dataset(tmpdir)
 
+    def test_rejects_fully_consistent_false_requested_accession_association(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            records_path, manifest = self._create_dataset(directory)
+            records = (
+                SeqRecord(Seq("ATGCATGC"), id="OTHER.1", description="other record"),
+                SeqRecord(Seq("GCTAGCTA"), id="NC_2.3", description="second record"),
+            )
+            for record in records:
+                record.annotations["molecule_type"] = "DNA"
+            serialized = io.StringIO()
+            SeqIO.write(records, serialized, "genbank")
+            artifact_bytes = serialized.getvalue().encode("utf-8")
+            records_path.write_bytes(artifact_bytes)
+            (directory / "batches" / "batch-00000.gb").write_bytes(artifact_bytes)
+
+            entries = [
+                {
+                    "requested_accession": "NC_1.2",
+                    "uid": None,
+                    "accession": "OTHER",
+                    "accession_version": "OTHER.1",
+                },
+                {
+                    "requested_accession": "NC_2.3",
+                    "uid": None,
+                    "accession": "NC_2",
+                    "accession_version": "NC_2.3",
+                },
+            ]
+            manifest["resolved_entries"] = entries
+            manifest["completed_batches"] = [
+                {
+                    "filename": "batch-00000.gb",
+                    "requested_identifiers": ["NC_1.2", "NC_2.3"],
+                    "record_count": 2,
+                    "byte_size": len(artifact_bytes),
+                    "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+                    "record_ids": ["OTHER.1", "NC_2.3"],
+                    "resolved_entries": entries,
+                }
+            ]
+            manifest["consolidated"] = {
+                "filename": "records.gb",
+                "record_count": 2,
+                "byte_size": len(artifact_bytes),
+                "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+            }
+            self._write_manifest(directory, manifest)
+
+            with self.assertRaisesRegex(
+                ValueError, "requested_accession.*resolved accession"
+            ):
+                validate_frozen_dataset(directory)
+
     def test_rejects_unknown_fields_at_every_manifest_level(self):
         mutations = (
             ("top-level credential", (), "NCBI_EMAIL"),

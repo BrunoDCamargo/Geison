@@ -1320,6 +1320,14 @@ def _validate_complete_resolved_entries(
                 f"NCBI dataset manifest field '{entry_path}.accession' does not match "
                 f"'{entry_path}.accession_version'."
             )
+        if identifier_kind == "accession" and requested_accession not in {
+            accession,
+            accession_version,
+        }:
+            raise ValueError(
+                f"NCBI dataset manifest field '{entry_path}.requested_accession' "
+                "must match the resolved accession or exact accession_version."
+            )
         entries.append(entry)
         accession_versions.append(accession_version)
 
