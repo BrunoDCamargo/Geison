@@ -1,33 +1,43 @@
 import hashlib
+import io
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
+import qpcr_pipeline.ncbi as ncbi
 from qpcr_pipeline.config import NcbiInputConfig
 from qpcr_pipeline.ncbi import (
     NcbiFetchedRecord,
     NcbiTransientError,
+    ResolvedNcbiQuery,
     acquire_ncbi_dataset,
     validate_frozen_dataset,
 )
 
 
 class FakeNcbiClient:
-    def __init__(self, records_by_request, failures=()):
+    def __init__(self, records_by_request, failures=(), resolutions=()):
         self.records_by_request = records_by_request
         self.failures = list(failures)
+        self.resolutions = list(resolutions)
         self.fetch_calls = []
         self.resolve_calls = []
 
     def resolve_query(self, query, max_records):
         self.resolve_calls.append((query, max_records))
+        if self.resolutions:
+            resolution = self.resolutions.pop(0)
+            if isinstance(resolution, BaseException):
+                raise resolution
+            return resolution
         raise AssertionError("query resolution was not expected")
 
     def fetch_records(self, identifiers, *, identifier_kind):
@@ -273,12 +283,16 @@ class AccessionAcquisitionTests(unittest.TestCase):
                     clock=lambda: "now",
                 )
 
-    def test_requires_an_explicit_client_until_the_production_adapter_exists(self):
+    def test_default_client_requires_environment_email_before_creating_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(ValueError, "NcbiClient"):
+            dataset_dir = Path(tmpdir) / "dataset"
+            with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(
+                ValueError, "NCBI_EMAIL"
+            ):
                 acquire_ncbi_dataset(
-                    self._config(("NC_000001.11",)), Path(tmpdir), clock=lambda: "now"
+                    self._config(("NC_000001.11",)), dataset_dir, clock=lambda: "now"
                 )
+            self.assertFalse(dataset_dir.exists())
 
     def test_rejects_noncanonical_resume_manifests_before_reuse(self):
         accessions = ("NC_000001.11",)
@@ -355,6 +369,476 @@ class AccessionAcquisitionTests(unittest.TestCase):
 
                 self.assertFalse(dataset_dir.exists())
                 self.assertEqual(client.fetch_calls, [])
+
+
+class QueryAcquisitionTests(unittest.TestCase):
+    def _record(self, accession_version: str) -> SeqRecord:
+        record = SeqRecord(
+            Seq("ATGCATGC"), id=accession_version, description=f"{accession_version} record"
+        )
+        record.annotations["molecule_type"] = "DNA"
+        return record
+
+    def _config(
+        self,
+        query: str = "example[Organism]",
+        *,
+        batch_size: int = 2,
+        retries: int = 3,
+        max_records: int | None = None,
+    ) -> NcbiInputConfig:
+        return NcbiInputConfig(
+            query=query,
+            batch_size=batch_size,
+            retries=retries,
+            max_records=max_records,
+        )
+
+    def _resolution(self, uids=("101", "102"), *, reported_count=2):
+        return ResolvedNcbiQuery(
+            uids=tuple(uids),
+            reported_count=reported_count,
+            query_translation="example organism[Organism]",
+        )
+
+    def _records(self):
+        return {"101": self._record("NC_1.2"), "102": self._record("NC_2.3")}
+
+    def _read_manifest(self, directory: Path) -> dict[str, object]:
+        return json.loads((directory / "dataset_manifest.json").read_text(encoding="utf-8"))
+
+    def test_persists_complete_query_composition_before_fetching(self):
+        client = FakeNcbiClient(
+            self._records(),
+            failures=(ValueError("stopped"),),
+            resolutions=(self._resolution(),),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            with self.assertRaisesRegex(ValueError, "stopped"):
+                acquire_ncbi_dataset(
+                    self._config(), directory, client=client, clock=lambda: "now"
+                )
+            manifest = self._read_manifest(directory)
+
+        self.assertEqual(client.resolve_calls, [("example[Organism]", None)])
+        self.assertEqual(manifest["status"], "PARTIAL")
+        self.assertEqual(manifest["source"]["resolved_uids"], ["101", "102"])
+        self.assertEqual(manifest["source"]["reported_count"], 2)
+        self.assertEqual(manifest["source"]["selected_count"], 2)
+        self.assertEqual(manifest["completed_batches"], [])
+
+    def test_applies_maximum_prefix_and_preserves_uid_to_accession_mapping(self):
+        resolution = self._resolution(("101", "102"), reported_count=9)
+        client = FakeNcbiClient(self._records(), resolutions=(resolution,))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            acquire_ncbi_dataset(
+                self._config(max_records=2),
+                directory,
+                client=client,
+                clock=lambda: "now",
+            )
+            manifest = self._read_manifest(directory)
+
+        self.assertEqual(client.resolve_calls, [("example[Organism]", 2)])
+        self.assertEqual(client.fetch_calls, [(("101", "102"), "uid")])
+        self.assertEqual(
+            manifest["source"],
+            {
+                "mode": "query",
+                "database": "nuccore",
+                "query": "example[Organism]",
+                "resolved_uids": ["101", "102"],
+                "reported_count": 9,
+                "selected_count": 2,
+                "max_records": 2,
+                "query_translation": "example organism[Organism]",
+            },
+        )
+        self.assertEqual(
+            [(entry["uid"], entry["accession_version"]) for entry in manifest["resolved_entries"]],
+            [("101", "NC_1.2"), ("102", "NC_2.3")],
+        )
+        self.assertEqual(
+            [entry["requested_accession"] for entry in manifest["resolved_entries"]],
+            [None, None],
+        )
+
+    def test_resumes_partial_query_without_resolving_again(self):
+        records = self._records()
+        interrupted = FakeNcbiClient(
+            records,
+            failures=(None, ValueError("stopped")),
+            resolutions=(self._resolution(),),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            with self.assertRaisesRegex(ValueError, "stopped"):
+                acquire_ncbi_dataset(
+                    self._config(batch_size=1),
+                    directory,
+                    client=interrupted,
+                    clock=lambda: "2026-08-21T00:00:00+00:00",
+                )
+            resumed = FakeNcbiClient(records)
+            acquire_ncbi_dataset(
+                self._config(batch_size=1),
+                directory,
+                client=resumed,
+                clock=lambda: "2026-08-21T01:00:00+00:00",
+            )
+
+        self.assertEqual(resumed.resolve_calls, [])
+        self.assertEqual(resumed.fetch_calls, [(("102",), "uid")])
+
+    def test_rejects_incompatible_partial_query_before_network_or_output_mutation(self):
+        cases = (
+            ("query", self._config(query="other[Organism]"), "source"),
+            ("maximum", self._config(max_records=1), "source"),
+            ("batch size", self._config(batch_size=1), "batch_size"),
+            ("retry limit", self._config(retries=2), "retries"),
+        )
+
+        for name, incompatible, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                directory = Path(tmpdir)
+                creator = FakeNcbiClient(
+                    self._records(),
+                    failures=(ValueError("stopped"),),
+                    resolutions=(self._resolution(),),
+                )
+                with self.assertRaisesRegex(ValueError, "stopped"):
+                    acquire_ncbi_dataset(
+                        self._config(), directory, client=creator, clock=lambda: "now"
+                    )
+                before = (directory / "dataset_manifest.json").read_bytes()
+                resumed = FakeNcbiClient(
+                    self._records(), resolutions=(self._resolution(),)
+                )
+
+                with self.assertRaisesRegex(ValueError, error):
+                    acquire_ncbi_dataset(
+                        incompatible, directory, client=resumed, clock=lambda: "later"
+                    )
+
+                self.assertEqual(resumed.resolve_calls, [])
+                self.assertEqual(resumed.fetch_calls, [])
+                self.assertEqual((directory / "dataset_manifest.json").read_bytes(), before)
+
+    def test_rejects_invalid_direct_query_configs_before_creating_output(self):
+        cases = (
+            ("missing query", NcbiInputConfig(), "query"),
+            ("blank query", NcbiInputConfig(query=" "), "query"),
+            (
+                "accessions",
+                NcbiInputConfig(query="virus", accessions=("NC_1",)),
+                "query",
+            ),
+            (
+                "frozen dataset",
+                NcbiInputConfig(query="virus", frozen_dataset=Path("frozen")),
+                "query",
+            ),
+            ("zero maximum", NcbiInputConfig(query="virus", max_records=0), "max_records"),
+            ("boolean maximum", NcbiInputConfig(query="virus", max_records=True), "max_records"),
+            ("small batch", NcbiInputConfig(query="virus", batch_size=0), "batch_size"),
+            ("large batch", NcbiInputConfig(query="virus", batch_size=501), "batch_size"),
+            ("negative retries", NcbiInputConfig(query="virus", retries=-1), "retries"),
+            ("large retries", NcbiInputConfig(query="virus", retries=11), "retries"),
+        )
+
+        for name, config, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                dataset_dir = Path(tmpdir) / "dataset"
+                client = FakeNcbiClient({}, resolutions=(self._resolution(),))
+
+                with self.assertRaisesRegex(ValueError, error):
+                    acquire_ncbi_dataset(config, dataset_dir, client=client, clock=lambda: "now")
+
+                self.assertFalse(dataset_dir.exists())
+                self.assertEqual(client.resolve_calls, [])
+                self.assertEqual(client.fetch_calls, [])
+
+    def test_rejects_noncanonical_query_source_fields_before_reuse(self):
+        cases = (
+            ("floating reported count", "reported_count", 2.0, "composition"),
+            ("floating selected count", "selected_count", 2.0, "selected_count"),
+            ("floating maximum", "max_records", 2.0, "source"),
+            ("credential field", "NCBI_API_KEY", "secret", "canonical"),
+        )
+
+        for name, field, value, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                directory = Path(tmpdir)
+                creator = FakeNcbiClient(
+                    self._records(),
+                    failures=(ValueError("stopped"),),
+                    resolutions=(self._resolution(),),
+                )
+                config = self._config(max_records=2)
+                with self.assertRaisesRegex(ValueError, "stopped"):
+                    acquire_ncbi_dataset(
+                        config,
+                        directory,
+                        client=creator,
+                        clock=lambda: "2026-08-21T00:00:00+00:00",
+                    )
+                manifest = self._read_manifest(directory)
+                manifest["source"][field] = value
+                (directory / "dataset_manifest.json").write_text(
+                    json.dumps(manifest), encoding="utf-8"
+                )
+                resumed = FakeNcbiClient(self._records())
+
+                with self.assertRaisesRegex(ValueError, error):
+                    acquire_ncbi_dataset(
+                        config, directory, client=resumed, clock=lambda: "later"
+                    )
+
+                self.assertEqual(resumed.resolve_calls, [])
+                self.assertEqual(resumed.fetch_calls, [])
+
+
+class _SearchHandle:
+    def __init__(self, payload):
+        self.payload = payload
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeEntrezModule:
+    def __init__(self, uids=("101", "102"), *, reported_count=None):
+        self.email = None
+        self.tool = None
+        self.api_key = None
+        self.uids = tuple(uids)
+        self.reported_count = len(self.uids) if reported_count is None else reported_count
+        self.search_handles = []
+        self.fetch_handles = []
+        self.search_calls = []
+        self.fetch_calls = []
+        self.search_error = None
+        self.fetch_error = None
+        self.fetch_text = ""
+
+    def esearch(self, **kwargs):
+        self.search_calls.append((kwargs, self.email, self.tool, self.api_key))
+        if self.search_error is not None:
+            raise self.search_error
+        start = kwargs["retstart"]
+        stop = start + kwargs["retmax"]
+        handle = _SearchHandle(
+            {
+                "Count": str(self.reported_count),
+                "IdList": list(self.uids[start:stop]),
+                "QueryTranslation": "translated query",
+            }
+        )
+        self.search_handles.append(handle)
+        return handle
+
+    def read(self, handle):
+        return handle.payload
+
+    def efetch(self, **kwargs):
+        self.fetch_calls.append((kwargs, self.email, self.tool, self.api_key))
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        handle = io.StringIO(self.fetch_text)
+        self.fetch_handles.append(handle)
+        return handle
+
+
+class BioEntrezClientTests(unittest.TestCase):
+    def _genbank(self, *accession_versions: str) -> str:
+        records = []
+        for accession_version in accession_versions:
+            record = SeqRecord(Seq("ATGCATGC"), id=accession_version, description="record")
+            record.annotations["molecule_type"] = "DNA"
+            records.append(record)
+        handle = io.StringIO()
+        SeqIO.write(records, handle, "genbank")
+        return handle.getvalue()
+
+    def _client(self, module, *, api_key="private-api-key"):
+        return ncbi.BioEntrezClient(
+            email="private@example.test",
+            api_key=api_key,
+            entrez_module=module,
+        )
+
+    def test_resolves_ordered_uids_in_stable_pages_of_at_most_ten_thousand(self):
+        uids = tuple(str(index) for index in range(1, 10002))
+        module = _FakeEntrezModule(uids)
+
+        result = self._client(module).resolve_query("example[Organism]", None)
+
+        self.assertEqual(result.uids, uids)
+        self.assertEqual(result.reported_count, 10001)
+        self.assertEqual(result.query_translation, "translated query")
+        self.assertEqual(
+            [call[0] for call in module.search_calls],
+            [
+                {
+                    "db": "nuccore",
+                    "term": "example[Organism]",
+                    "retstart": 0,
+                    "retmax": 10000,
+                },
+                {
+                    "db": "nuccore",
+                    "term": "example[Organism]",
+                    "retstart": 10000,
+                    "retmax": 1,
+                },
+            ],
+        )
+        self.assertTrue(all(handle.closed for handle in module.search_handles))
+        self.assertNotIn("private-api-key", repr(result))
+
+    def test_fetches_nuccore_records_and_maps_accessions_by_version_or_base(self):
+        module = _FakeEntrezModule()
+        module.fetch_text = self._genbank("AB2.3", "NC_1.2")
+
+        result = self._client(module).fetch_records(
+            ("NC_1", "AB2.3"), identifier_kind="accession"
+        )
+
+        self.assertEqual(
+            [(item.request_id, item.record.id) for item in result],
+            [("NC_1", "NC_1.2"), ("AB2.3", "AB2.3")],
+        )
+        self.assertEqual(
+            module.fetch_calls[0][0],
+            {
+                "db": "nuccore",
+                "id": "NC_1,AB2.3",
+                "rettype": "gb",
+                "retmode": "text",
+            },
+        )
+        self.assertTrue(module.fetch_handles[0].closed)
+
+    def test_maps_uid_requests_by_returned_record_order(self):
+        module = _FakeEntrezModule()
+        module.fetch_text = self._genbank("NC_1.2", "NC_2.3")
+
+        result = self._client(module).fetch_records(("101", "102"), identifier_kind="uid")
+
+        self.assertEqual(
+            [(item.request_id, item.record.id) for item in result],
+            [("101", "NC_1.2"), ("102", "NC_2.3")],
+        )
+
+    def test_configures_credentials_immediately_before_every_request(self):
+        module = _FakeEntrezModule()
+        module.fetch_text = self._genbank("NC_1.2")
+        client = self._client(module)
+
+        client.resolve_query("example", 1)
+        module.email = "changed"
+        module.tool = "changed"
+        module.api_key = "changed"
+        client.fetch_records(("101",), identifier_kind="uid")
+
+        for _, email, tool, api_key in module.search_calls + module.fetch_calls:
+            self.assertEqual(email, "private@example.test")
+            self.assertEqual(tool, "geison-qpcr")
+            self.assertEqual(api_key, "private-api-key")
+
+    def test_environment_factory_requires_nonblank_email_before_any_request(self):
+        module = _FakeEntrezModule()
+        for environ in ({}, {"NCBI_EMAIL": "   "}):
+            with self.subTest(environ=environ):
+                with self.assertRaisesRegex(ValueError, "NCBI_EMAIL") as raised:
+                    ncbi.BioEntrezClient.from_environment(
+                        environ=environ, entrez_module=module
+                    )
+                self.assertNotIn("private-api-key", str(raised.exception))
+        self.assertEqual(module.search_calls, [])
+        self.assertEqual(module.fetch_calls, [])
+
+    def test_environment_factory_treats_blank_api_key_as_absent(self):
+        for api_key in ("", "   "):
+            with self.subTest(api_key=api_key):
+                module = _FakeEntrezModule()
+                client = ncbi.BioEntrezClient.from_environment(
+                    environ={
+                        "NCBI_EMAIL": " person@example.test ",
+                        "NCBI_API_KEY": api_key,
+                    },
+                    entrez_module=module,
+                )
+
+                result = client.resolve_query("example", 1)
+
+                self.assertEqual(result.uids, ("101",))
+                self.assertEqual(
+                    module.search_calls[0][1:],
+                    ("person@example.test", "geison-qpcr", None),
+                )
+
+    def test_client_representation_does_not_expose_credentials(self):
+        representation = repr(self._client(_FakeEntrezModule()))
+
+        self.assertNotIn("private@example.test", representation)
+        self.assertNotIn("private-api-key", representation)
+
+    def test_rejects_incomplete_search_composition(self):
+        module = _FakeEntrezModule(("101",), reported_count=2)
+
+        with self.assertRaisesRegex(ValueError, "count|composition"):
+            self._client(module).resolve_query("example", None)
+
+        self.assertTrue(all(handle.closed for handle in module.search_handles))
+
+    def test_rejects_incomplete_fetch_composition(self):
+        module = _FakeEntrezModule()
+        module.fetch_text = self._genbank("NC_1.2")
+
+        with self.assertRaisesRegex(ValueError, "exactly one|count|composition"):
+            self._client(module).fetch_records(("101", "102"), identifier_kind="uid")
+
+        self.assertTrue(module.fetch_handles[0].closed)
+
+    def test_sanitizes_transient_network_failures_without_raw_exception_chaining(self):
+        failures = (
+            HTTPError("https://private-api-key@example.test", 429, "secret", {}, None),
+            HTTPError("https://private-api-key@example.test", 503, "secret", {}, None),
+            URLError("https://private-api-key@example.test"),
+            TimeoutError("private-api-key"),
+            ConnectionError("private-api-key"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                module = _FakeEntrezModule()
+                module.search_error = failure
+                with self.assertRaises(NcbiTransientError) as raised:
+                    self._client(module).resolve_query("example", 1)
+                self.assertNotIn("private-api-key", str(raised.exception))
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_distinguishes_and_sanitizes_nonretryable_http_failures(self):
+        module = _FakeEntrezModule()
+        module.fetch_error = HTTPError(
+            "https://private-api-key@example.test", 404, "secret", {}, None
+        )
+
+        with self.assertRaisesRegex(
+            ncbi.NcbiRequestError, "NCBI request failed with HTTP status 404"
+        ) as raised:
+            self._client(module).fetch_records(("101",), identifier_kind="uid")
+
+        self.assertNotIn("private-api-key", str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
 
 
 class FrozenDatasetTests(unittest.TestCase):
