@@ -3,6 +3,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -161,6 +162,30 @@ class AccessionAcquisitionTests(unittest.TestCase):
 
         self.assertEqual(sleeps, [1, 2])
         self.assertEqual(client.fetch_calls, [((accessions[0],), "accession")] * 3)
+
+    def test_reports_sanitized_fetch_operation_and_attempts_after_retry_exhaustion(self):
+        accessions = ("NC_000001.11",)
+        secret = "private-api-key"
+        client = FakeNcbiClient(
+            {accessions[0]: self._record(accessions[0])},
+            failures=(NcbiTransientError(secret),) * 4,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, self.assertRaisesRegex(
+            NcbiTransientError, "NCBI record fetch failed after 4 attempts"
+        ) as raised:
+            acquire_ncbi_dataset(
+                self._config(accessions),
+                Path(tmpdir),
+                client=client,
+                sleep=lambda _: None,
+                clock=lambda: "now",
+            )
+
+        self.assertEqual(client.fetch_calls, [((accessions[0],), "accession")] * 4)
+        self.assertNotIn(secret, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
 
     def test_propagates_non_transient_failures_without_retrying(self):
         accessions = ("NC_000001.11",)
@@ -539,6 +564,11 @@ class QueryAcquisitionTests(unittest.TestCase):
                 "query",
             ),
             (
+                "noncanonical accession list",
+                NcbiInputConfig(query="virus", accessions=["NC_1"]),
+                "accession",
+            ),
+            (
                 "frozen dataset",
                 NcbiInputConfig(query="virus", frozen_dataset=Path("frozen")),
                 "query",
@@ -602,6 +632,62 @@ class QueryAcquisitionTests(unittest.TestCase):
                 self.assertEqual(resumed.resolve_calls, [])
                 self.assertEqual(resumed.fetch_calls, [])
 
+    def test_rejects_nonlist_resolved_uids_even_for_a_zero_count_query(self):
+        creator = FakeNcbiClient(
+            self._records(),
+            failures=(ValueError("stopped"),),
+            resolutions=(self._resolution(),),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            with self.assertRaisesRegex(ValueError, "stopped"):
+                acquire_ncbi_dataset(
+                    self._config(),
+                    directory,
+                    client=creator,
+                    clock=lambda: "2026-08-21T00:00:00+00:00",
+                )
+            manifest = self._read_manifest(directory)
+            manifest["source"]["resolved_uids"] = None
+            manifest["source"]["reported_count"] = 0
+            manifest["source"]["selected_count"] = 0
+            (directory / "dataset_manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            resumed = FakeNcbiClient(self._records())
+
+            with self.assertRaisesRegex(ValueError, "resolved_uids|composition"):
+                acquire_ncbi_dataset(
+                    self._config(), directory, client=resumed, clock=lambda: "later"
+                )
+
+            self.assertEqual(resumed.resolve_calls, [])
+            self.assertEqual(resumed.fetch_calls, [])
+
+    def test_reports_sanitized_query_operation_and_attempts_after_retry_exhaustion(self):
+        secret = "private-api-key"
+        client = FakeNcbiClient(
+            self._records(),
+            resolutions=(NcbiTransientError(secret),) * 3,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, self.assertRaisesRegex(
+            NcbiTransientError, "NCBI query resolution failed after 3 attempts"
+        ) as raised:
+            acquire_ncbi_dataset(
+                self._config(retries=2),
+                Path(tmpdir),
+                client=client,
+                sleep=lambda _: None,
+                clock=lambda: "now",
+            )
+
+        self.assertEqual(client.resolve_calls, [("example[Organism]", None)] * 3)
+        self.assertNotIn(secret, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+
 
 class _SearchHandle:
     def __init__(self, payload):
@@ -624,6 +710,7 @@ class _FakeEntrezModule:
         self.search_calls = []
         self.fetch_calls = []
         self.search_error = None
+        self.read_error = None
         self.fetch_error = None
         self.fetch_text = ""
 
@@ -644,6 +731,8 @@ class _FakeEntrezModule:
         return handle
 
     def read(self, handle):
+        if self.read_error is not None:
+            raise self.read_error
         return handle.payload
 
     def efetch(self, **kwargs):
@@ -653,6 +742,36 @@ class _FakeEntrezModule:
         handle = io.StringIO(self.fetch_text)
         self.fetch_handles.append(handle)
         return handle
+
+
+class _CoordinatedEntrezModule(_FakeEntrezModule):
+    def __init__(self):
+        super().__init__()
+        self.first_request_entered = threading.Event()
+        self.release_first_request = threading.Event()
+        self.second_email_configured = threading.Event()
+        self._configuration_count = 0
+        self._request_count = 0
+        self._coordination_lock = threading.Lock()
+        self._track_configuration = True
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if name == "email" and getattr(self, "_track_configuration", False):
+            with self._coordination_lock:
+                self._configuration_count += 1
+                if self._configuration_count == 2:
+                    self.second_email_configured.set()
+
+    def esearch(self, **kwargs):
+        with self._coordination_lock:
+            self._request_count += 1
+            first_request = self._request_count == 1
+        if first_request:
+            self.first_request_entered.set()
+            if not self.release_first_request.wait(timeout=5):
+                raise AssertionError("test did not release the first request")
+        return super().esearch(**kwargs)
 
 
 class BioEntrezClientTests(unittest.TestCase):
@@ -752,6 +871,47 @@ class BioEntrezClientTests(unittest.TestCase):
             self.assertEqual(tool, "geison-qpcr")
             self.assertEqual(api_key, "private-api-key")
 
+    def test_configuration_and_request_creation_are_atomic_across_clients(self):
+        module = _CoordinatedEntrezModule()
+        first = ncbi.BioEntrezClient(
+            email="first@example.test",
+            api_key="first-key",
+            entrez_module=module,
+        )
+        second = ncbi.BioEntrezClient(
+            email="second@example.test",
+            api_key="second-key",
+            entrez_module=module,
+        )
+        errors = []
+
+        def resolve(client):
+            try:
+                client.resolve_query("example", 1)
+            except BaseException as error:
+                errors.append(error)
+
+        first_thread = threading.Thread(target=resolve, args=(first,))
+        second_thread = threading.Thread(target=resolve, args=(second,))
+        first_thread.start()
+        self.assertTrue(module.first_request_entered.wait(timeout=2))
+        second_thread.start()
+        module.second_email_configured.wait(timeout=1)
+        module.release_first_request.set()
+        first_thread.join(timeout=5)
+        second_thread.join(timeout=5)
+
+        self.assertFalse(first_thread.is_alive(), "first request deadlocked")
+        self.assertFalse(second_thread.is_alive(), "second request deadlocked")
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [call[1:] for call in module.search_calls],
+            [
+                ("first@example.test", "geison-qpcr", "first-key"),
+                ("second@example.test", "geison-qpcr", "second-key"),
+            ],
+        )
+
     def test_environment_factory_requires_nonblank_email_before_any_request(self):
         module = _FakeEntrezModule()
         for environ in ({}, {"NCBI_EMAIL": "   "}):
@@ -797,6 +957,21 @@ class BioEntrezClientTests(unittest.TestCase):
             self._client(module).resolve_query("example", None)
 
         self.assertTrue(all(handle.closed for handle in module.search_handles))
+
+    def test_distinguishes_request_oserror_from_local_parser_oserror(self):
+        request_module = _FakeEntrezModule()
+        request_module.search_error = OSError("socket unavailable")
+        with self.assertRaises(NcbiTransientError):
+            self._client(request_module).resolve_query("example", 1)
+
+        parser_error = OSError("local parser failure")
+        parser_module = _FakeEntrezModule()
+        parser_module.read_error = parser_error
+        with self.assertRaises(OSError) as raised:
+            self._client(parser_module).resolve_query("example", 1)
+
+        self.assertIs(raised.exception, parser_error)
+        self.assertTrue(parser_module.search_handles[0].closed)
 
     def test_rejects_incomplete_fetch_composition(self):
         module = _FakeEntrezModule()

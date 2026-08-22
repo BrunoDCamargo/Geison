@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Callable, Literal, Mapping, Protocol, TypeVar
 from urllib.error import HTTPError, URLError
+from weakref import WeakKeyDictionary
 
 from Bio import Entrez, SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -22,6 +24,9 @@ RECORDS_NAME = "records.gb"
 SCHEMA_VERSION = 1
 _BATCH_DIRECTORY_NAME = "batches"
 _BATCH_FILENAME_FORMAT = "batch-{index:05d}.gb"
+_ENTREZ_LOCKS_GUARD = threading.Lock()
+_ENTREZ_REQUEST_LOCKS = WeakKeyDictionary()
+_ENTREZ_FALLBACK_LOCK = threading.Lock()
 _MANIFEST_FIELDS = frozenset(
     {
         "schema_version",
@@ -80,6 +85,7 @@ class BioEntrezClient:
     email: str = field(repr=False)
     api_key: str | None = field(default=None, repr=False)
     entrez_module: object = field(default=Entrez, repr=False)
+    _request_lock: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         email = self.email.strip()
@@ -90,6 +96,7 @@ class BioEntrezClient:
         object.__setattr__(self, "email", email)
         api_key = self.api_key.strip() if self.api_key else ""
         object.__setattr__(self, "api_key", api_key or None)
+        object.__setattr__(self, "_request_lock", _entrez_request_lock(self.entrez_module))
 
     @classmethod
     def from_environment(
@@ -184,36 +191,38 @@ class BioEntrezClient:
         setattr(self.entrez_module, "api_key", self.api_key)
 
     def _search_page(self, query: str, *, retstart: int, retmax: int) -> object:
-        def request() -> object:
-            self._configure()
-            handle = self.entrez_module.esearch(
-                db="nuccore",
-                term=query,
-                retstart=retstart,
-                retmax=retmax,
-            )
-            try:
-                return self.entrez_module.read(handle)
-            finally:
-                handle.close()
+        def acquire_handle() -> object:
+            with self._request_lock:
+                self._configure()
+                return self.entrez_module.esearch(
+                    db="nuccore",
+                    term=query,
+                    retstart=retstart,
+                    retmax=retmax,
+                )
 
-        return _run_entrez_request(request)
+        handle = _run_entrez_request(acquire_handle)
+        try:
+            return self.entrez_module.read(handle)
+        finally:
+            handle.close()
 
     def _fetch_genbank(self, identifiers: tuple[str, ...]) -> tuple[SeqRecord, ...]:
-        def request() -> tuple[SeqRecord, ...]:
-            self._configure()
-            handle = self.entrez_module.efetch(
-                db="nuccore",
-                id=",".join(identifiers),
-                rettype="gb",
-                retmode="text",
-            )
-            try:
-                return tuple(SeqIO.parse(handle, "genbank"))
-            finally:
-                handle.close()
+        def acquire_handle() -> object:
+            with self._request_lock:
+                self._configure()
+                return self.entrez_module.efetch(
+                    db="nuccore",
+                    id=",".join(identifiers),
+                    rettype="gb",
+                    retmode="text",
+                )
 
-        return _run_entrez_request(request)
+        handle = _run_entrez_request(acquire_handle)
+        try:
+            return tuple(SeqIO.parse(handle, "genbank"))
+        finally:
+            handle.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +232,18 @@ class AcquiredNcbiDataset:
 
 
 _Result = TypeVar("_Result")
+
+
+def _entrez_request_lock(entrez_module: object) -> object:
+    with _ENTREZ_LOCKS_GUARD:
+        try:
+            request_lock = _ENTREZ_REQUEST_LOCKS.get(entrez_module)
+            if request_lock is None:
+                request_lock = threading.Lock()
+                _ENTREZ_REQUEST_LOCKS[entrez_module] = request_lock
+            return request_lock
+        except TypeError:
+            return _ENTREZ_FALLBACK_LOCK
 
 
 def _run_entrez_request(operation: Callable[[], _Result]) -> _Result:
@@ -304,15 +325,18 @@ def _with_retries(
     operation: Callable[[], _Result],
     retries: int,
     sleep: Callable[[float], object],
+    operation_label: str,
 ) -> _Result:
     for retry_index in range(retries + 1):
         try:
             return operation()
         except NcbiTransientError:
             if retry_index == retries:
-                raise
+                break
             sleep(min(2**retry_index, 16))
-    raise AssertionError("retry loop did not return or raise")
+    raise NcbiTransientError(
+        f"{operation_label} failed after {retries + 1} attempts."
+    ) from None
 
 
 def acquire_ncbi_dataset(
@@ -377,6 +401,7 @@ def acquire_ncbi_dataset(
             ),
             config.retries,
             sleep,
+            "NCBI record fetch",
         )
         records = _ordered_client_records(fetched, requested_identifiers)
         metadata = _write_batch_atomically(
@@ -414,22 +439,31 @@ def _validate_acquisition_config(
 ) -> Literal["query", "accessions"]:
     if not isinstance(config, NcbiInputConfig):
         raise ValueError("NCBI acquisition requires an NcbiInputConfig.")
-    has_query = isinstance(config.query, str) and bool(config.query.strip())
+    if config.query is not None and (
+        not isinstance(config.query, str) or not config.query.strip()
+    ):
+        raise ValueError("NCBI query acquisition requires a non-blank query.")
     accessions = config.accessions
-    has_accessions = isinstance(accessions, tuple) and bool(accessions)
-    if config.frozen_dataset is not None or has_query == has_accessions:
+    if not isinstance(accessions, tuple):
+        raise ValueError("NCBI accession acquisition accessions must be a tuple.")
+    if any(
+        not isinstance(accession, str) or not accession.strip()
+        for accession in accessions
+    ) or len(set(accessions)) != len(accessions):
+        raise ValueError(
+            "NCBI accession acquisition requires unique non-blank accessions."
+        )
+    has_query = config.query is not None
+    has_accessions = bool(accessions)
+    source_count = sum(
+        (has_query, has_accessions, config.frozen_dataset is not None)
+    )
+    if source_count != 1:
         raise ValueError(
             "NCBI acquisition requires exactly one query or accession source."
         )
-    if config.query is not None and not has_query:
-        raise ValueError("NCBI query acquisition requires a non-blank query.")
-    if has_accessions and (
-        any(not isinstance(accession, str) or not accession.strip() for accession in accessions)
-        or len(set(accessions)) != len(accessions)
-    ):
-        raise ValueError(
-            "NCBI accession acquisition requires a non-empty tuple of unique non-blank accessions."
-        )
+    if config.frozen_dataset is not None:
+        raise ValueError("NCBI acquisition cannot acquire a frozen_dataset source.")
     if has_accessions and config.max_records is not None:
         raise ValueError(
             "NCBI accession acquisition cannot specify max_records."
@@ -549,6 +583,7 @@ def _load_or_create_manifest(
             lambda: client.resolve_query(config.query, config.max_records),
             config.retries,
             sleep,
+            "NCBI query resolution",
         )
         _validate_query_resolution(resolution, config.max_records)
         manifest = _initial_query_manifest(config, resolution, clock)
@@ -678,10 +713,12 @@ def _validate_resumable_source(source: object, config: NcbiInputConfig) -> None:
         )
     ):
         raise ValueError("NCBI dataset manifest source does not match this query configuration.")
+    if not isinstance(source["resolved_uids"], list):
+        raise ValueError(
+            "NCBI dataset manifest query source resolved_uids must be a list."
+        )
     resolution = ResolvedNcbiQuery(
-        uids=tuple(source["resolved_uids"])
-        if isinstance(source["resolved_uids"], list)
-        else (),
+        uids=tuple(source["resolved_uids"]),
         reported_count=source["reported_count"],
         query_translation=source["query_translation"],
     )
