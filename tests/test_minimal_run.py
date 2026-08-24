@@ -15,6 +15,7 @@ from qpcr_pipeline.alignment import MafftError
 from qpcr_pipeline.config import (
     AlignmentConfig,
     ClusteringConfig,
+    ConservationConfig,
     NcbiInputConfig,
     PipelineConfig,
 )
@@ -263,6 +264,122 @@ class MinimalPipelineRunTests(unittest.TestCase):
             ["alignment_position", "reference_position", "reference_base"],
         )
 
+    def test_enabled_conservation_uses_only_aligned_discovery_records(self):
+        class FakeCdHitRunner:
+            def run(self, input_path, output_path, config):
+                del config
+                with Path(input_path).open(encoding="utf-8") as handle:
+                    records = {record.id: record for record in SeqIO.parse(handle, "fasta")}
+                SeqIO.write(
+                    [records["geison-00000000"], records["geison-00000002"]],
+                    output_path,
+                    "fasta",
+                )
+                Path(str(output_path) + ".clstr").write_text(
+                    ">Cluster 0\n"
+                    "0 4nt, >geison-00000000... *\n"
+                    "1 4nt, >geison-00000001... at +/99.00%\n"
+                    ">Cluster 1\n"
+                    "0 4nt, >geison-00000002... *\n",
+                    encoding="utf-8",
+                )
+
+        class FakeMafftRunner:
+            def run(self, input_path, output_path, config):
+                del config
+                with Path(input_path).open(encoding="utf-8") as handle:
+                    records = list(SeqIO.parse(handle, "fasta"))
+                SeqIO.write(records, output_path, "fasta")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            fasta_path = tmp_path / "target.fasta"
+            outdir = tmp_path / "run"
+            fasta_path.write_text(
+                ">rejected\nACGX\n"
+                ">s1\nACGT\n"
+                ">s2\nACAT\n"
+                ">s3\nACCT\n",
+                encoding="utf-8",
+            )
+
+            # This fixture isolates pipeline routing from CD-HIT's five-base
+            # executable limit while keeping the real clustering parser active.
+            with patch("qpcr_pipeline.clustering.derive_word_length", return_value=4):
+                summary = run_pipeline(
+                    PipelineConfig(
+                        target_name="synthetic-target",
+                        input_fasta=fasta_path,
+                        clustering=ClusteringConfig(enabled=True, identity=0.80),
+                        alignment=AlignmentConfig(enabled=True, reference_id="s3"),
+                        conservation=ConservationConfig(
+                            enabled=True, window_size=3, step_size=2
+                        ),
+                    ),
+                    outdir,
+                    cdhit_runner=FakeCdHitRunner(),
+                    mafft_runner=FakeMafftRunner(),
+                )
+
+            qc_report = json.loads(
+                (outdir / "qc_report.json").read_text(encoding="utf-8")
+            )
+            conservation_report = json.loads(
+                (outdir / "conservation" / "conservation_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            position_lines = (
+                outdir / "conservation" / "position_metrics.tsv"
+            ).read_text(encoding="utf-8").splitlines()
+            position_header = position_lines[0].split("\t")
+            position_rows = [
+                dict(zip(position_header, line.split("\t"), strict=True))
+                for line in position_lines[1:]
+            ]
+            conservation_files = {
+                path.name for path in (outdir / "conservation").iterdir()
+            }
+            major_consensus = (
+                outdir / "conservation" / "consensus_major.fasta"
+            ).read_text(encoding="utf-8")
+            iupac_consensus = (
+                outdir / "conservation" / "consensus_iupac.fasta"
+            ).read_text(encoding="utf-8")
+            html = (outdir / "report.html").read_text(encoding="utf-8")
+
+        self.assertEqual(qc_report["evaluation_set"]["sequence_ids"], ["s1", "s2", "s3"])
+        self.assertEqual(qc_report["discovery_set"]["sequence_ids"], ["s1", "s3"])
+        self.assertEqual(
+            qc_report["conservation"],
+            {
+                "status": "COMPLETE",
+                "reference_id": "s3",
+                "position_count": 4,
+                "window_count": 2,
+            },
+        )
+        self.assertEqual(summary.sequence_ids, ["s1", "s2", "s3"])
+        self.assertEqual(conservation_report["discovery_set_ids"], ["s1", "s3"])
+        self.assertEqual(
+            conservation_files,
+            {
+                "conservation_report.json",
+                "position_metrics.tsv",
+                "window_metrics.tsv",
+                "consensus_major.fasta",
+                "consensus_iupac.fasta",
+            },
+        )
+        self.assertEqual(len(position_rows), 4)
+        self.assertTrue(all(row["depth"] == "2" for row in position_rows))
+        self.assertEqual(position_rows[2]["frequency_a"], "0.0")
+        self.assertEqual(position_rows[2]["frequency_c"], "0.5")
+        self.assertEqual(position_rows[2]["frequency_g"], "0.5")
+        self.assertEqual(major_consensus, ">geison-major-consensus\nACCT\n")
+        self.assertEqual(iupac_consensus, ">geison-iupac-consensus\nACST\n")
+        self.assertIn("<canvas", html)
+
     def test_disabled_local_clustering_does_not_call_runner_and_keeps_evaluation_set(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
@@ -283,6 +400,11 @@ class MinimalPipelineRunTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
+            conservation_report = json.loads(
+                (outdir / "conservation" / "conservation_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
 
         runner_factory.assert_not_called()
         mafft_runner_factory.assert_not_called()
@@ -298,6 +420,21 @@ class MinimalPipelineRunTests(unittest.TestCase):
             {"status": "SKIPPED", "reference_id": None, "reference_mode": None},
         )
         self.assertEqual(alignment_report["status"], "SKIPPED")
+        self.assertEqual(
+            qc_report["conservation"],
+            {
+                "status": "SKIPPED",
+                "reference_id": None,
+                "position_count": 0,
+                "window_count": 0,
+            },
+        )
+        self.assertEqual(conservation_report["status"], "SKIPPED")
+        self.assertFalse((outdir / "conservation" / "position_metrics.tsv").exists())
+        self.assertFalse((outdir / "conservation" / "window_metrics.tsv").exists())
+        self.assertFalse((outdir / "conservation" / "consensus_major.fasta").exists())
+        self.assertFalse((outdir / "conservation" / "consensus_iupac.fasta").exists())
+        self.assertFalse((outdir / "report.html").exists())
 
     def test_run_rejects_invalid_clustering_config_before_creating_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -359,6 +496,11 @@ class MinimalPipelineRunTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
+            conservation_report = json.loads(
+                (outdir / "conservation" / "conservation_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
 
         runner_factory.assert_not_called()
         mafft_runner_factory.assert_not_called()
@@ -381,7 +523,52 @@ class MinimalPipelineRunTests(unittest.TestCase):
             {"status": "SKIPPED", "reference_id": None, "reference_mode": None},
         )
         self.assertEqual(alignment_report["status"], "SKIPPED")
+        self.assertEqual(
+            qc_report["conservation"],
+            {
+                "status": "SKIPPED",
+                "reference_id": None,
+                "position_count": 0,
+                "window_count": 0,
+            },
+        )
+        self.assertEqual(conservation_report["status"], "SKIPPED")
+        self.assertFalse((outdir / "conservation" / "position_metrics.tsv").exists())
+        self.assertFalse((outdir / "conservation" / "window_metrics.tsv").exists())
+        self.assertFalse((outdir / "conservation" / "consensus_major.fasta").exists())
+        self.assertFalse((outdir / "conservation" / "consensus_iupac.fasta").exists())
+        self.assertFalse((outdir / "report.html").exists())
         self.assertEqual(effective_manifest["status"], "COMPLETE")
+
+    def test_run_rejects_invalid_conservation_before_output_or_analysis(self):
+        cases = (
+            (
+                PipelineConfig(
+                    target_name="invalid-conservation",
+                    input_fasta=FIXTURE_FASTA,
+                    conservation=ConservationConfig(window_size=0),
+                ),
+                "window_size",
+            ),
+            (
+                PipelineConfig(
+                    target_name="conservation-without-alignment",
+                    input_fasta=FIXTURE_FASTA,
+                    conservation=ConservationConfig(enabled=True),
+                ),
+                "requires enabled alignment",
+            ),
+        )
+
+        for config, message in cases:
+            with self.subTest(config=config), tempfile.TemporaryDirectory() as tmpdir:
+                outdir = Path(tmpdir) / "run"
+                with patch("qpcr_pipeline.pipeline.analyze_conservation") as analyze:
+                    with self.assertRaisesRegex(ValueError, message):
+                        run_pipeline(config, outdir)
+
+                analyze.assert_not_called()
+                self.assertFalse(outdir.exists())
 
     def test_run_uses_frozen_ncbi_dataset_without_mutating_its_source(self):
         accession = "NC_FROZEN.1"
