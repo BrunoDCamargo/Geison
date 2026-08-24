@@ -3,9 +3,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from Bio import SeqIO
 
+from qpcr_pipeline import clustering
 from qpcr_pipeline.clustering import CdHitError, cluster_sequences, derive_word_length
 from qpcr_pipeline.config import ClusteringConfig
 from qpcr_pipeline.local_input import LocalSequenceRecord
@@ -48,6 +50,120 @@ class FailingCdHitRunner:
     def run(self, input_path, output_path, config):
         self.calls.append((input_path, output_path, config))
         raise CdHitError("fake CD-HIT failure")
+
+
+class SubprocessCdHitRunnerTests(unittest.TestCase):
+    def setUp(self):
+        self.config = ClusteringConfig(
+            enabled=True, identity=0.95, threads=4, memory_mb=2048
+        )
+
+    def test_invokes_cdhit_with_structured_arguments(self):
+        # Omitting or changing a CD-HIT option would make clustering unsafe or incorrect.
+        with tempfile.TemporaryDirectory(prefix="input path ") as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "input sequences.fasta"
+            output_path = root / "representatives output.fasta"
+            input_path.write_text(">sequence\nACGT\n", encoding="utf-8")
+            output_path.write_text(">sequence\nACGT\n", encoding="utf-8")
+            Path(str(output_path) + ".clstr").write_text(">Cluster 0\n", encoding="utf-8")
+
+            with mock.patch("qpcr_pipeline.clustering.shutil.which", return_value="C:/tools/cd-hit-est.exe") as which, mock.patch(
+                "qpcr_pipeline.clustering.subprocess.run",
+                return_value=__import__("subprocess").CompletedProcess([], 0, "", ""),
+            ) as run:
+                clustering.SubprocessCdHitRunner().run(input_path, output_path, self.config)
+
+        which.assert_called_once_with("cd-hit-est")
+        run.assert_called_once_with(
+            [
+                "C:/tools/cd-hit-est.exe",
+                "-i", str(input_path),
+                "-o", str(output_path),
+                "-c", "0.95",
+                "-n", "10",
+                "-d", "0",
+                "-g", "1",
+                "-r", "0",
+                "-T", "4",
+                "-M", "2048",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_missing_executable_fails_before_starting_a_process(self):
+        # Running with an unresolved executable would produce an opaque OS failure.
+        with mock.patch("qpcr_pipeline.clustering.shutil.which", return_value=None), mock.patch(
+            "qpcr_pipeline.clustering.subprocess.run"
+        ) as run:
+            with self.assertRaisesRegex(CdHitError, "not found on PATH"):
+                clustering.SubprocessCdHitRunner().run(
+                    Path("input.fasta"), Path("output.fasta"), self.config
+                )
+
+        run.assert_not_called()
+
+    def test_nonzero_exit_reports_the_code_and_bounded_normalized_stderr(self):
+        # Returning raw, unlimited stderr can hide the failure reason or exhaust reports.
+        stderr = "  diagnostic   details\n" + ("x" * 2_100)
+        with mock.patch("qpcr_pipeline.clustering.shutil.which", return_value="cd-hit-est"), mock.patch(
+            "qpcr_pipeline.clustering.subprocess.run",
+            return_value=__import__("subprocess").CompletedProcess([], 23, "", stderr),
+        ):
+            with self.assertRaises(CdHitError) as raised:
+                clustering.SubprocessCdHitRunner().run(
+                    Path("input.fasta"), Path("output.fasta"), self.config
+                )
+
+        message = str(raised.exception)
+        self.assertIn("exit code 23", message)
+        self.assertIn("diagnostic details", message)
+        self.assertNotIn("\n", message)
+        self.assertNotIn("x" * 2_001, message)
+
+    def test_success_without_both_expected_output_files_fails(self):
+        # Accepting a partial CD-HIT result would publish a corrupt clustering result.
+        for missing_path in ("representatives.fasta", "representatives.fasta.clstr"):
+            with self.subTest(missing_path=missing_path), tempfile.TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "representatives.fasta"
+                available_path = (
+                    Path(str(output_path) + ".clstr")
+                    if missing_path == output_path.name
+                    else output_path
+                )
+                available_path.write_text(">sequence\nACGT\n", encoding="utf-8")
+                with mock.patch("qpcr_pipeline.clustering.shutil.which", return_value="cd-hit-est"), mock.patch(
+                    "qpcr_pipeline.clustering.subprocess.run",
+                    return_value=__import__("subprocess").CompletedProcess([], 0, "", ""),
+                ):
+                    with self.assertRaisesRegex(CdHitError, "representative FASTA and .clstr"):
+                        clustering.SubprocessCdHitRunner().run(
+                            Path(tmpdir) / "input.fasta", output_path, self.config
+                        )
+
+
+class DefaultRunnerTests(unittest.TestCase):
+    def test_default_runner_is_constructed_only_for_enabled_nonempty_clustering(self):
+        # Constructing the external-tool runner for bypass paths would make those paths depend on CD-HIT.
+        records = (LocalSequenceRecord("seq-1", "ACGTACGT"),)
+        evaluation_set = EvaluationSet(("seq-1",))
+        fake_runner = FakeCdHitRunner(
+            ("geison-00000000",), ">Cluster 0\n0 8nt, >geison-00000000... *\n"
+        )
+        with mock.patch(
+            "qpcr_pipeline.clustering.SubprocessCdHitRunner", return_value=fake_runner
+        ) as runner_factory, tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            cluster_sequences(records, evaluation_set, ClusteringConfig(), output_dir)
+            cluster_sequences((), EvaluationSet(()), ClusteringConfig(enabled=True), output_dir)
+            cluster_sequences(
+                records, evaluation_set, ClusteringConfig(enabled=True), output_dir
+            )
+
+        runner_factory.assert_called_once_with()
+        self.assertEqual(len(fake_runner.calls), 1)
 
 
 class ClusteringTests(unittest.TestCase):
@@ -156,16 +272,6 @@ class ClusteringTests(unittest.TestCase):
         self.assertEqual(result.discovery_set, DiscoverySet(()))
         self.assertEqual(runner.calls, [])
         self.assertIsNone(result.raw_cluster_path)
-
-    def test_enabled_nonempty_clustering_requires_an_injected_runner(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(CdHitError, "runner"):
-                cluster_sequences(
-                    self.records,
-                    self.evaluation_set,
-                    ClusteringConfig(enabled=True),
-                    Path(tmpdir),
-                )
 
     def test_publishes_complete_traceable_artifacts_without_internal_ids(self):
         runner = FakeCdHitRunner(
