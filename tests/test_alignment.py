@@ -60,6 +60,15 @@ class EmptyOutputRunner:
         Path(output_path).write_text("", encoding="utf-8")
 
 
+class RawOutputRunner:
+    def __init__(self, output_text):
+        self.output_text = output_text
+
+    def run(self, input_path, output_path, config):
+        with Path(output_path).open("w", encoding="utf-8", newline="") as handle:
+            handle.write(self.output_text)
+
+
 class SubprocessMafftRunnerTests(unittest.TestCase):
     def test_runs_resolved_mafft_with_safe_fixed_arguments_and_writes_stdout(self):
         runner = SubprocessMafftRunner("configured mafft")
@@ -336,6 +345,48 @@ class AlignmentTests(unittest.TestCase):
                     self._run(records, discovery, config, runner, tmpdir)
                 self._assert_no_complete_report(tmpdir)
 
+    def test_raw_fasta_validation_rejects_sequence_whitespace_and_preheader_text(self):
+        malformed_outputs = (
+            (
+                "whitespace within sequence content",
+                ">geison-00000000\nAC GT\n>geison-00000001\nACGT\n",
+            ),
+            (
+                "non-header text before first header",
+                "ACGT\n>geison-00000000\nACGT\n>geison-00000001\nACGT\n",
+            ),
+        )
+        records = self.records[:2]
+        discovery = DiscoverySet(("ref", "reverse"))
+        for name, output_text in malformed_outputs:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                with self.assertRaisesRegex(MafftError, "FASTA"):
+                    self._run(
+                        records=records,
+                        discovery=discovery,
+                        runner=RawOutputRunner(output_text),
+                        directory=tmpdir,
+                    )
+                self._assert_no_complete_report(tmpdir)
+
+    def test_raw_fasta_validation_accepts_crlf_descriptions_and_blank_lines(self):
+        output_text = (
+            ">geison-00000000 reference\r\n"
+            "ACGT\r\n"
+            "\r\n"
+            ">geison-00000001 other\r\n"
+            "ACGT\r\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._run(
+                records=self.records[:2],
+                discovery=DiscoverySet(("ref", "reverse")),
+                runner=RawOutputRunner(output_text),
+                directory=tmpdir,
+            )
+
+        self.assertEqual(result.status, "COMPLETE")
+
     def test_disabled_removes_only_stale_data_and_publishes_skipped_report(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             alignment_dir = Path(tmpdir) / "alignment"
@@ -356,6 +407,54 @@ class AlignmentTests(unittest.TestCase):
             self.assertIsNone(result.alignment_fasta_path)
             self.assertIsNone(result.coordinate_map_path)
             self.assertEqual(report["artifacts"], {"alignment_fasta": None, "coordinate_map": None})
+            self.assertEqual(
+                report["tool"],
+                {
+                    "name": "mafft",
+                    "executed": False,
+                    "parameters": {
+                        "strategy": "auto",
+                        "nucleotide_mode": True,
+                        "input_order": True,
+                        "adjust_direction_accurately": True,
+                        "threads": 1,
+                        "iterative_refinement_threads": 0,
+                        "quiet": True,
+                    },
+                },
+            )
+
+    def test_disabled_missing_reference_does_not_mutate_existing_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            alignment_dir = Path(tmpdir) / "alignment"
+            alignment_dir.mkdir()
+            (alignment_dir / "discovery_alignment.fasta").write_text(
+                ">old\nACGT\n", encoding="utf-8"
+            )
+            (alignment_dir / "coordinate_map.tsv").write_text(
+                "old coordinates\n", encoding="utf-8"
+            )
+            (alignment_dir / "alignment_report.json").write_text(
+                '{"schema_version": 1, "status": "COMPLETE"}\n', encoding="utf-8"
+            )
+            (alignment_dir / "keep.txt").write_text("keep\n", encoding="utf-8")
+            before = {
+                path.name: path.read_bytes()
+                for path in alignment_dir.iterdir()
+            }
+
+            with self.assertRaisesRegex(MafftError, "not in the Discovery Set"):
+                self._run(
+                    config=AlignmentConfig(enabled=False, reference_id="missing"),
+                    runner=FailingRunner(),
+                    directory=tmpdir,
+                )
+
+            after = {
+                path.name: path.read_bytes()
+                for path in alignment_dir.iterdir()
+            }
+            self.assertEqual(after, before)
 
     def test_enabled_empty_publishes_empty_artifacts_without_runner(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -372,6 +471,23 @@ class AlignmentTests(unittest.TestCase):
             self.assertIsNone(result.reference_id)
             self.assertEqual(result.sequences, ())
             self.assertEqual(result.coordinates, ())
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["tool"],
+                {
+                    "name": "mafft",
+                    "executed": False,
+                    "parameters": {
+                        "strategy": "auto",
+                        "nucleotide_mode": True,
+                        "input_order": True,
+                        "adjust_direction_accurately": True,
+                        "threads": 1,
+                        "iterative_refinement_threads": 0,
+                        "quiet": True,
+                    },
+                },
+            )
 
     def test_enabled_empty_rejects_explicit_reference_absent_from_discovery(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -396,6 +512,23 @@ class AlignmentTests(unittest.TestCase):
             self.assertEqual(result.reference_mode, "automatic")
             self.assertEqual(result.sequences, (AlignedSequence("only", "ACGT", "forward"),))
             self.assertEqual([item.reference_position for item in result.coordinates], [1, 2, 3, 4])
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["tool"],
+                {
+                    "name": "mafft",
+                    "executed": False,
+                    "parameters": {
+                        "strategy": "auto",
+                        "nucleotide_mode": True,
+                        "input_order": True,
+                        "adjust_direction_accurately": True,
+                        "threads": 1,
+                        "iterative_refinement_threads": 0,
+                        "quiet": True,
+                    },
+                },
+            )
 
     def test_report_contains_traceable_schema_and_relative_artifacts(self):
         runner = FakeMafftRunner(
@@ -407,7 +540,22 @@ class AlignmentTests(unittest.TestCase):
 
         self.assertEqual(report["schema_version"], 1)
         self.assertEqual(report["enabled"], True)
-        self.assertEqual(report["tool"], {"name": "mafft", "parameters": {"threads": 1}})
+        self.assertEqual(
+            report["tool"],
+            {
+                "name": "mafft",
+                "executed": True,
+                "parameters": {
+                    "strategy": "auto",
+                    "nucleotide_mode": True,
+                    "input_order": True,
+                    "adjust_direction_accurately": True,
+                    "threads": 1,
+                    "iterative_refinement_threads": 0,
+                    "quiet": True,
+                },
+            },
+        )
         self.assertEqual(report["discovery_set_ids"], ["ref", "reverse", "other"])
         self.assertEqual(report["reference"], {"id": "ref", "mode": "explicit", "automatic_selection_rule": None})
         self.assertEqual([item["orientation"] for item in report["orientations"]], ["forward", "forward", "forward"])
@@ -428,14 +576,90 @@ class AlignmentTests(unittest.TestCase):
             self._run(runner=runner, directory=tmpdir)
             self.assertEqual(source.read_text(encoding="utf-8"), "do not change")
 
-    def test_data_publication_failure_does_not_publish_complete_report(self):
-        runner = FakeMafftRunner(
-            (("geison-00000000", "ACGT"), ("geison-00000001", "ACGT"), ("geison-00000002", "ACGA"))
+    def test_prior_complete_report_is_invalidated_before_each_enabled_data_replacement(self):
+        output_records = (
+            ("geison-00000000", "ACGT"),
+            ("geison-00000001", "ACGT"),
+            ("geison-00000002", "ACGA"),
         )
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(Path, "replace", side_effect=OSError("replace failed")):
-            with self.assertRaises(OSError):
-                self._run(runner=runner, directory=tmpdir)
-            self._assert_no_complete_report(tmpdir)
+        for failing_filename in ("discovery_alignment.fasta", "coordinate_map.tsv"):
+            with self.subTest(failing_filename=failing_filename), tempfile.TemporaryDirectory() as tmpdir:
+                prior = self._run(
+                    runner=FakeMafftRunner(output_records), directory=tmpdir
+                )
+                alignment_dir = Path(tmpdir) / "alignment"
+                sibling = alignment_dir / "keep.txt"
+                sibling.write_text("keep\n", encoding="utf-8")
+                failing_destination = alignment_dir / failing_filename
+                original_replace = Path.replace
+
+                def replace_with_selected_failure(source, destination):
+                    if Path(destination) == failing_destination:
+                        raise OSError(f"failed to replace {failing_filename}")
+                    return original_replace(source, destination)
+
+                with patch.object(Path, "replace", new=replace_with_selected_failure):
+                    with self.assertRaisesRegex(OSError, "failed to replace"):
+                        self._run(
+                            runner=FakeMafftRunner(output_records), directory=tmpdir
+                        )
+
+                self.assertFalse(prior.report_path.exists())
+                self.assertEqual(sibling.read_text(encoding="utf-8"), "keep\n")
+
+    def test_prior_complete_report_is_invalidated_during_disabled_publication_failures(self):
+        output_records = (
+            ("geison-00000000", "ACGT"),
+            ("geison-00000001", "ACGT"),
+            ("geison-00000002", "ACGA"),
+        )
+        failure_cases = (
+            ("aligned FASTA removal", "unlink", "discovery_alignment.fasta"),
+            ("coordinate map removal", "unlink", "coordinate_map.tsv"),
+            ("SKIPPED report publication", "replace", "alignment_report.json"),
+        )
+        for name, operation, failing_filename in failure_cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                prior = self._run(
+                    runner=FakeMafftRunner(output_records), directory=tmpdir
+                )
+                alignment_dir = Path(tmpdir) / "alignment"
+                sibling = alignment_dir / "keep.txt"
+                sibling.write_text("keep\n", encoding="utf-8")
+                failing_path = alignment_dir / failing_filename
+                if operation == "unlink":
+                    original_unlink = Path.unlink
+
+                    def unlink_with_selected_failure(path, *args, **kwargs):
+                        if Path(path) == failing_path:
+                            raise OSError(f"failed to remove {failing_filename}")
+                        return original_unlink(path, *args, **kwargs)
+
+                    failure_patch = patch.object(
+                        Path, "unlink", new=unlink_with_selected_failure
+                    )
+                else:
+                    original_replace = Path.replace
+
+                    def replace_with_selected_failure(source, destination):
+                        if Path(destination) == failing_path:
+                            raise OSError(f"failed to replace {failing_filename}")
+                        return original_replace(source, destination)
+
+                    failure_patch = patch.object(
+                        Path, "replace", new=replace_with_selected_failure
+                    )
+
+                with failure_patch:
+                    with self.assertRaisesRegex(OSError, "failed to"):
+                        self._run(
+                            config=AlignmentConfig(enabled=False),
+                            runner=FailingRunner(),
+                            directory=tmpdir,
+                        )
+
+                self.assertFalse(prior.report_path.exists())
+                self.assertEqual(sibling.read_text(encoding="utf-8"), "keep\n")
 
 if __name__ == "__main__":
     unittest.main()

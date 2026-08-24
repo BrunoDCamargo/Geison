@@ -132,6 +132,14 @@ def align_discovery(
     fasta_path = output_dir / "alignment" / "discovery_alignment.fasta"
     coordinate_path = output_dir / "alignment" / "coordinate_map.tsv"
 
+    if (
+        config.reference_id is not None
+        and config.reference_id not in discovery_set.sequence_ids
+    ):
+        raise MafftError(
+            f"Configured alignment reference {config.reference_id!r} is not in the Discovery Set."
+        )
+
     if not config.enabled:
         _publish_skipped(report_path, fasta_path, coordinate_path, discovery_set, config)
         return AlignmentResult(
@@ -146,14 +154,7 @@ def align_discovery(
             report_path=report_path,
         )
 
-    if (
-        config.reference_id is not None
-        and config.reference_id not in discovery_set.sequence_ids
-    ):
-        raise MafftError(
-            f"Configured alignment reference {config.reference_id!r} is not in the Discovery Set."
-        )
-
+    mafft_executed = False
     if not discovery_set.sequence_ids:
         sequences: tuple[AlignedSequence, ...] = ()
         coordinates: tuple[AlignmentCoordinate, ...] = ()
@@ -170,6 +171,7 @@ def align_discovery(
             if runner is None:
                 runner = SubprocessMafftRunner()
             sequences = _run_and_parse(records_by_id, discovery_set, reference_id, config, runner)
+            mafft_executed = True
         reference_sequence = next(
             sequence.aligned_sequence
             for sequence in sequences
@@ -185,6 +187,7 @@ def align_discovery(
         reference_mode=reference_mode,
         sequences=sequences,
         coordinates=coordinates,
+        mafft_executed=mafft_executed,
         artifacts={
             "alignment_fasta": "alignment/discovery_alignment.fasta",
             "coordinate_map": "alignment/coordinate_map.tsv",
@@ -317,8 +320,12 @@ def _parse_aligned_fasta(
     reference_id: str,
 ) -> dict[str, AlignedSequence]:
     try:
-        with output_path.open(encoding="utf-8") as handle:
-            output_records = list(SeqIO.parse(handle, "fasta"))
+        output_text = output_path.read_text(encoding="utf-8")
+    except Exception as error:
+        raise MafftError(f"MAFFT output is not valid FASTA: {error}") from error
+    _validate_raw_aligned_fasta(output_text)
+    try:
+        output_records = list(SeqIO.parse(StringIO(output_text), "fasta"))
     except Exception as error:
         raise MafftError(f"MAFFT output is not valid FASTA: {error}") from error
     if not output_records:
@@ -366,6 +373,29 @@ def _parse_aligned_fasta(
     return parsed
 
 
+def _validate_raw_aligned_fasta(output_text: str) -> None:
+    seen_header = False
+    for line_number, line in enumerate(output_text.splitlines(), start=1):
+        if line == "":
+            continue
+        if line.startswith(">"):
+            header = line[1:]
+            if not header or header[0].isspace():
+                raise MafftError(
+                    f"MAFFT output FASTA header on line {line_number} has no valid identifier."
+                )
+            seen_header = True
+            continue
+        if not seen_header:
+            raise MafftError(
+                f"MAFFT output FASTA has non-header text before the first header on line {line_number}."
+            )
+        if any(base != "-" and base not in _VALID_IUPAC_DNA for base in line):
+            raise MafftError(
+                f"MAFFT output FASTA sequence line {line_number} contains whitespace or invalid symbols."
+            )
+
+
 def _split_mafft_id(output_id: str) -> tuple[bool, str]:
     if output_id.startswith("_R_"):
         internal_id = output_id[3:]
@@ -398,13 +428,26 @@ def _report(
     reference_mode: Literal["explicit", "automatic"] | None,
     sequences: tuple[AlignedSequence, ...],
     coordinates: tuple[AlignmentCoordinate, ...],
+    mafft_executed: bool,
     artifacts: dict[str, str | None],
 ) -> dict[str, object]:
     return {
         "schema_version": 1,
         "status": status,
         "enabled": config.enabled,
-        "tool": {"name": "mafft", "parameters": {"threads": config.threads}},
+        "tool": {
+            "name": "mafft",
+            "executed": mafft_executed,
+            "parameters": {
+                "strategy": "auto",
+                "nucleotide_mode": True,
+                "input_order": True,
+                "adjust_direction_accurately": True,
+                "threads": config.threads,
+                "iterative_refinement_threads": 0,
+                "quiet": True,
+            },
+        },
         "discovery_set_ids": list(discovery_set.sequence_ids),
         "reference": {
             "id": reference_id,
@@ -437,6 +480,7 @@ def _publish_complete(
     report: dict[str, object],
 ) -> None:
     fasta_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.unlink(missing_ok=True)
     _atomic_write_text(fasta_path, _fasta_text(sequences))
     _atomic_write_text(coordinate_path, _coordinate_text(coordinates))
     _atomic_write_text(report_path, json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -450,6 +494,7 @@ def _publish_skipped(
     config: AlignmentConfig,
 ) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.unlink(missing_ok=True)
     fasta_path.unlink(missing_ok=True)
     coordinate_path.unlink(missing_ok=True)
     _atomic_write_text(
@@ -463,6 +508,7 @@ def _publish_skipped(
                 reference_mode=None,
                 sequences=(),
                 coordinates=(),
+                mafft_executed=False,
                 artifacts={"alignment_fasta": None, "coordinate_map": None},
             ),
             indent=2,
