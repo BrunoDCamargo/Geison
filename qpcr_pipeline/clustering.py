@@ -51,7 +51,7 @@ class SubprocessCdHitRunner:
         executable = shutil.which(self.executable)
         if executable is None:
             raise CdHitError(
-                "cd-hit-est was not found on PATH; install CD-HIT or disable clustering."
+                f"{self.executable!r} was not found on PATH; install CD-HIT or disable clustering."
             )
 
         args = [

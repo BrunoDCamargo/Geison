@@ -105,6 +105,18 @@ class SubprocessCdHitRunnerTests(unittest.TestCase):
 
         run.assert_not_called()
 
+    def test_missing_configured_executable_names_that_executable_in_the_guidance(self):
+        # Naming a different executable as missing would misdirect installation troubleshooting.
+        with mock.patch("qpcr_pipeline.clustering.shutil.which", return_value=None):
+            with self.assertRaises(CdHitError) as raised:
+                clustering.SubprocessCdHitRunner("custom-cluster-tool").run(
+                    Path("input.fasta"), Path("output.fasta"), self.config
+                )
+
+        message = str(raised.exception)
+        self.assertIn("custom-cluster-tool", message)
+        self.assertIn("install CD-HIT or disable clustering", message)
+
     def test_nonzero_exit_reports_the_code_and_bounded_normalized_stderr(self):
         # Returning raw, unlimited stderr can hide the failure reason or exhaust reports.
         stderr = "  diagnostic   details\n" + ("x" * 2_100)
