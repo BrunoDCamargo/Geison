@@ -12,6 +12,7 @@ from pathlib import Path
 from qpcr_pipeline.alignment import MafftRunner, align_discovery
 from qpcr_pipeline.clustering import CdHitRunner, cluster_sequences
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
+from qpcr_pipeline.conservation import analyze_conservation
 from qpcr_pipeline.local_input import load_genbank, load_local_sequences
 from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen_dataset
 from qpcr_pipeline.qc import evaluate_sequences
@@ -91,6 +92,13 @@ def run_pipeline(
         output_dir,
         runner=mafft_runner,
     )
+    conservation = analyze_conservation(
+        discovery_records,
+        alignment,
+        config.conservation,
+        output_dir,
+        target_name=config.target_name,
+    )
 
     summary = RunSummary(
         status="COMPLETED",
@@ -115,6 +123,12 @@ def run_pipeline(
             "status": alignment.status,
             "reference_id": alignment.reference_id,
             "reference_mode": alignment.reference_mode,
+        },
+        "conservation": {
+            "status": conservation.status,
+            "reference_id": conservation.reference_id,
+            "position_count": len(conservation.positions),
+            "window_count": len(conservation.windows),
         },
     }
 
