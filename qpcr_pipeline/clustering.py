@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 import tempfile
 import uuid
 from collections import Counter
@@ -32,6 +34,56 @@ class CdHitRunner(Protocol):
         output_path: Path,
         config: ClusteringConfig,
     ) -> None: ...
+
+
+class SubprocessCdHitRunner:
+    """Run CD-HIT-EST through a structured subprocess boundary."""
+
+    def __init__(self, executable: str = "cd-hit-est") -> None:
+        self.executable = executable
+
+    def run(
+        self,
+        input_path: Path,
+        output_path: Path,
+        config: ClusteringConfig,
+    ) -> None:
+        executable = shutil.which(self.executable)
+        if executable is None:
+            raise CdHitError(
+                "cd-hit-est was not found on PATH; install CD-HIT or disable clustering."
+            )
+
+        args = [
+            executable,
+            "-i", str(input_path),
+            "-o", str(output_path),
+            "-c", str(config.identity),
+            "-n", str(derive_word_length(config.identity)),
+            "-d", "0",
+            "-g", "1",
+            "-r", "0",
+            "-T", str(config.threads),
+            "-M", str(config.memory_mb),
+        ]
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = " ".join(completed.stderr.split())[:2_000]
+            detail = f": {stderr}" if stderr else ""
+            raise CdHitError(
+                f"cd-hit-est failed with exit code {completed.returncode}{detail}"
+            )
+
+        raw_cluster_path = Path(str(output_path) + ".clstr")
+        if not output_path.is_file() or not raw_cluster_path.is_file():
+            raise CdHitError(
+                "cd-hit-est did not produce representative FASTA and .clstr output."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,11 +157,7 @@ def cluster_sequences(
     *,
     runner: CdHitRunner | None = None,
 ) -> ClusteringResult:
-    """Create a Discovery Set and its traceable clustering artifacts.
-
-    This task deliberately requires an injected runner for enabled, non-empty
-    clustering. The production default is added by the subprocess-runner task.
-    """
+    """Create a Discovery Set and its traceable clustering artifacts."""
     validate_clustering_config(config)
     output_dir = Path(output_dir)
     evaluation_ids = evaluation_set.sequence_ids
@@ -121,9 +169,7 @@ def cluster_sequences(
         raw_cluster_text: str | None = None
     else:
         if runner is None:
-            raise CdHitError(
-                "Enabled, non-empty clustering requires an injected CD-HIT runner."
-            )
+            runner = SubprocessCdHitRunner()
         discovery_ids, clusters, raw_cluster_text = _run_and_parse(
             records_by_id, evaluation_ids, config, runner
         )
