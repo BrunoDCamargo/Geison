@@ -7,10 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
+from qpcr_pipeline.config import ClusteringConfig, NcbiInputConfig, PipelineConfig
 from qpcr_pipeline.ncbi import NcbiFetchedRecord, acquire_ncbi_dataset
 from qpcr_pipeline.pipeline import run_pipeline
 
@@ -40,6 +41,120 @@ class MinimalPipelineRunTests(unittest.TestCase):
             if path.is_file()
         }
 
+    def test_enabled_clustering_publishes_discovery_set_from_approved_records(self):
+        class FakeCdHitRunner:
+            def __init__(self):
+                self.input_records = []
+
+            def run(self, input_path, output_path, config):
+                with Path(input_path).open(encoding="utf-8") as handle:
+                    records = list(SeqIO.parse(handle, "fasta"))
+                self.input_records = [
+                    (record.id, str(record.seq)) for record in records
+                ]
+                records_by_id = {record.id: record for record in records}
+                SeqIO.write(
+                    [
+                        records_by_id["geison-00000000"],
+                        records_by_id["geison-00000002"],
+                    ],
+                    output_path,
+                    "fasta",
+                )
+                Path(str(output_path) + ".clstr").write_text(
+                    ">Cluster 0\n"
+                    "0 8nt, >geison-00000000... *\n"
+                    "1 8nt, >geison-00000001... at +/99.00%\n"
+                    ">Cluster 1\n"
+                    "0 8nt, >geison-00000002... *\n",
+                    encoding="utf-8",
+                )
+
+        runner = FakeCdHitRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            fasta_path = tmp_path / "target.fasta"
+            outdir = tmp_path / "run"
+            fasta_path.write_text(
+                ">rejected\n"
+                "ACGTXCGT\n"
+                ">s1\n"
+                "ACGTACGT\n"
+                ">s2\n"
+                "ACGTACGA\n"
+                ">s3\n"
+                "ACGTACCC\n",
+                encoding="utf-8",
+            )
+
+            summary = run_pipeline(
+                PipelineConfig(
+                    target_name="synthetic-target",
+                    input_fasta=fasta_path,
+                    clustering=ClusteringConfig(enabled=True),
+                ),
+                outdir,
+                cdhit_runner=runner,
+            )
+            qc_report = json.loads(
+                (outdir / "qc_report.json").read_text(encoding="utf-8")
+            )
+            clustering_report = json.loads(
+                (outdir / "clustering_report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(qc_report["evaluation_set"]["sequence_ids"], ["s1", "s2", "s3"])
+        self.assertEqual(qc_report["discovery_set"]["sequence_ids"], ["s1", "s3"])
+        self.assertEqual(summary.sequence_ids, ["s1", "s2", "s3"])
+        self.assertEqual(clustering_report["counts"], {"evaluation": 3, "discovery": 2})
+        self.assertEqual(
+            runner.input_records,
+            [
+                ("geison-00000000", "ACGTACGT"),
+                ("geison-00000001", "ACGTACGA"),
+                ("geison-00000002", "ACGTACCC"),
+            ],
+        )
+
+    def test_disabled_local_clustering_does_not_call_runner_and_keeps_evaluation_set(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "run"
+            with patch("qpcr_pipeline.clustering.SubprocessCdHitRunner") as runner_factory:
+                summary = run_pipeline(
+                    PipelineConfig(
+                        target_name="synthetic-target", input_fasta=FIXTURE_FASTA
+                    ),
+                    outdir,
+                )
+            qc_report = json.loads(
+                (outdir / "qc_report.json").read_text(encoding="utf-8")
+            )
+
+        runner_factory.assert_not_called()
+        self.assertEqual(summary.sequence_ids, ["seq-1", "seq-2", "seq-3"])
+        self.assertEqual(
+            qc_report["evaluation_set"]["sequence_ids"], ["seq-1", "seq-2", "seq-3"]
+        )
+        self.assertEqual(
+            qc_report["discovery_set"]["sequence_ids"], ["seq-1", "seq-2", "seq-3"]
+        )
+
+    def test_run_rejects_invalid_clustering_config_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "run"
+
+            with self.assertRaisesRegex(ValueError, "identity.*0.75 and 1.0"):
+                run_pipeline(
+                    PipelineConfig(
+                        target_name="synthetic-target",
+                        input_fasta=FIXTURE_FASTA,
+                        clustering=ClusteringConfig(identity=0.74),
+                    ),
+                    outdir,
+                )
+
+            self.assertFalse(outdir.exists())
+
     def test_run_routes_acquired_ncbi_records_through_existing_qc(self):
         valid_accession = "NC_VALID.1"
         invalid_accession = "NC_INVALID.1"
@@ -62,21 +177,23 @@ class MinimalPipelineRunTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
-            summary = run_pipeline(
-                PipelineConfig(
-                    target_name="synthetic-target",
-                    input_ncbi=NcbiInputConfig(
-                        accessions=(valid_accession, invalid_accession), batch_size=1
+            with patch("qpcr_pipeline.clustering.SubprocessCdHitRunner") as runner_factory:
+                summary = run_pipeline(
+                    PipelineConfig(
+                        target_name="synthetic-target",
+                        input_ncbi=NcbiInputConfig(
+                            accessions=(valid_accession, invalid_accession), batch_size=1
+                        ),
                     ),
-                ),
-                outdir,
-                ncbi_client=FakeNcbiClient(),
-            )
+                    outdir,
+                    ncbi_client=FakeNcbiClient(),
+                )
             qc_report = json.loads((outdir / "qc_report.json").read_text(encoding="utf-8"))
             effective_manifest = json.loads(
                 (outdir / "ncbi_dataset_manifest.json").read_text(encoding="utf-8")
             )
 
+        runner_factory.assert_not_called()
         self.assertEqual(summary.sequence_ids, [valid_accession])
         self.assertEqual(
             qc_report["records"],
@@ -90,6 +207,7 @@ class MinimalPipelineRunTests(unittest.TestCase):
             ],
         )
         self.assertEqual(qc_report["evaluation_set"]["sequence_ids"], [valid_accession])
+        self.assertEqual(qc_report["discovery_set"]["sequence_ids"], [valid_accession])
         self.assertEqual(effective_manifest["status"], "COMPLETE")
 
     def test_run_uses_frozen_ncbi_dataset_without_mutating_its_source(self):
