@@ -106,6 +106,14 @@ def align_discovery(
             report_path=report_path,
         )
 
+    if (
+        config.reference_id is not None
+        and config.reference_id not in discovery_set.sequence_ids
+    ):
+        raise MafftError(
+            f"Configured alignment reference {config.reference_id!r} is not in the Discovery Set."
+        )
+
     if not discovery_set.sequence_ids:
         sequences: tuple[AlignedSequence, ...] = ()
         coordinates: tuple[AlignmentCoordinate, ...] = ()

@@ -58,6 +58,11 @@ class EmptyOutputRunner:
         Path(output_path).write_text("", encoding="utf-8")
 
 
+class MissingOutputRunner:
+    def run(self, input_path, output_path, config):
+        pass
+
+
 def record(sequence_id, sequence):
     return LocalSequenceRecord(sequence_id=sequence_id, sequence=sequence)
 
@@ -187,7 +192,7 @@ class AlignmentTests(unittest.TestCase):
         valid_output = (("geison-00000000", "ACGT"), ("geison-00000001", "ACGA"))
         cases = (
             ("duplicate discovery", self.records, DiscoverySet(("ref", "ref")), None, None),
-            ("duplicate records", (record("ref", "ACGT"), record("ref", "ACGA")), DiscoverySet(("ref", "ref")), None, None),
+            ("duplicate records", (record("ref", "ACGT"), record("ref", "ACGA")), DiscoverySet(("ref", "reverse")), None, None),
             ("membership mismatch", self.records[:2], self.discovery, None, None),
             ("reference absent", self.records, self.discovery, None, AlignmentConfig(enabled=True, reference_id="missing")),
             ("empty input", (record("ref", ""),), DiscoverySet(("ref",)), None, AlignmentConfig(enabled=True)),
@@ -202,6 +207,7 @@ class AlignmentTests(unittest.TestCase):
             ("forward mutation", self.records[:2], DiscoverySet(("ref", "reverse")), FakeMafftRunner((("geison-00000000", "ACGT"), ("geison-00000001", "ACGG"))), None),
             ("reverse mutation", self.records[:2], DiscoverySet(("ref", "reverse")), FakeMafftRunner((("geison-00000000", "ACGT"), ("_R_geison-00000001", "ACGG"))), None),
             ("runner error", self.records[:2], DiscoverySet(("ref", "reverse")), RaisingRunner(), None),
+            ("missing output", self.records[:2], DiscoverySet(("ref", "reverse")), MissingOutputRunner(), None),
             ("empty output", self.records[:2], DiscoverySet(("ref", "reverse")), EmptyOutputRunner(), None),
         )
         for name, records, discovery, runner, config in cases:
@@ -246,6 +252,18 @@ class AlignmentTests(unittest.TestCase):
             self.assertIsNone(result.reference_id)
             self.assertEqual(result.sequences, ())
             self.assertEqual(result.coordinates, ())
+
+    def test_enabled_empty_rejects_explicit_reference_absent_from_discovery(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(MafftError, "not in the Discovery Set"):
+                self._run(
+                    records=(),
+                    discovery=DiscoverySet(()),
+                    config=AlignmentConfig(enabled=True, reference_id="missing"),
+                    runner=FailingRunner(),
+                    directory=tmpdir,
+                )
+            self._assert_no_complete_report(tmpdir)
 
     def test_enabled_singleton_is_identity_without_runner(self):
         singleton = (record("only", "ACGT"),)
