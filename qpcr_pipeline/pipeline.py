@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from qpcr_pipeline.clustering import CdHitRunner, cluster_sequences
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
 from qpcr_pipeline.local_input import load_genbank, load_local_sequences
 from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen_dataset
@@ -24,7 +25,11 @@ class RunSummary:
 
 
 def run_pipeline(
-    config: PipelineConfig, outdir: str | Path, *, ncbi_client: NcbiClient | None = None
+    config: PipelineConfig,
+    outdir: str | Path,
+    *,
+    ncbi_client: NcbiClient | None = None,
+    cdhit_runner: CdHitRunner | None = None,
 ) -> RunSummary:
     selected_input = config.selected_input
     output_dir = Path(outdir)
@@ -61,6 +66,17 @@ def run_pipeline(
         length_tolerance_fraction=config.qc.length_tolerance_fraction,
     )
     approved_ids = result.evaluation_set.sequence_ids
+    approved_id_set = set(approved_ids)
+    approved_records = tuple(
+        record for record in records if record.sequence_id in approved_id_set
+    )
+    clustering = cluster_sequences(
+        approved_records,
+        result.evaluation_set,
+        config.clustering,
+        output_dir,
+        runner=cdhit_runner,
+    )
 
     summary = RunSummary(
         status="COMPLETED",
@@ -80,6 +96,7 @@ def run_pipeline(
         ],
         "target_sequence_set": {"sequence_ids": list(result.target_sequence_set.sequence_ids)},
         "evaluation_set": {"sequence_ids": list(approved_ids)},
+        "discovery_set": {"sequence_ids": list(clustering.discovery_set.sequence_ids)},
     }
 
     _write_json_atomic(
