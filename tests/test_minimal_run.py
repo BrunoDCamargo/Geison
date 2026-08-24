@@ -11,7 +11,13 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from qpcr_pipeline.config import ClusteringConfig, NcbiInputConfig, PipelineConfig
+from qpcr_pipeline.alignment import MafftError
+from qpcr_pipeline.config import (
+    AlignmentConfig,
+    ClusteringConfig,
+    NcbiInputConfig,
+    PipelineConfig,
+)
 from qpcr_pipeline.ncbi import NcbiFetchedRecord, acquire_ncbi_dataset
 from qpcr_pipeline.pipeline import run_pipeline
 
@@ -172,10 +178,97 @@ class MinimalPipelineRunTests(unittest.TestCase):
             "clustering/cd-hit-est.clstr",
         )
 
+    def test_enabled_alignment_uses_discovery_records_and_publishes_traceability(self):
+        class FakeCdHitRunner:
+            def run(self, input_path, output_path, config):
+                del config
+                with Path(input_path).open(encoding="utf-8") as handle:
+                    records = {record.id: record for record in SeqIO.parse(handle, "fasta")}
+                SeqIO.write(
+                    [records["geison-00000000"], records["geison-00000002"]],
+                    output_path,
+                    "fasta",
+                )
+                Path(str(output_path) + ".clstr").write_text(
+                    ">Cluster 0\n"
+                    "0 12nt, >geison-00000000... *\n"
+                    "1 12nt, >geison-00000001... at +/99.00%\n"
+                    ">Cluster 1\n"
+                    "0 12nt, >geison-00000002... *\n",
+                    encoding="utf-8",
+                )
+
+        class FakeMafftRunner:
+            def __init__(self):
+                self.input_records = []
+
+            def run(self, input_path, output_path, config):
+                del config
+                with Path(input_path).open(encoding="utf-8") as handle:
+                    records = list(SeqIO.parse(handle, "fasta"))
+                self.input_records = [(record.id, str(record.seq)) for record in records]
+                SeqIO.write(records, output_path, "fasta")
+
+        mafft_runner = FakeMafftRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            fasta_path = tmp_path / "target.fasta"
+            outdir = tmp_path / "run"
+            fasta_path.write_text(
+                ">rejected\nACGTXCGTACGT\n"
+                ">s1\nACGTACGTACGT\n"
+                ">s2\nACGTACGAACGT\n"
+                ">s3\nACGTACCCACGT\n",
+                encoding="utf-8",
+            )
+
+            summary = run_pipeline(
+                PipelineConfig(
+                    target_name="synthetic-target",
+                    input_fasta=fasta_path,
+                    clustering=ClusteringConfig(enabled=True),
+                    alignment=AlignmentConfig(enabled=True, reference_id="s3"),
+                ),
+                outdir,
+                cdhit_runner=FakeCdHitRunner(),
+                mafft_runner=mafft_runner,
+            )
+            qc_report = json.loads((outdir / "qc_report.json").read_text(encoding="utf-8"))
+            with (outdir / "alignment" / "discovery_alignment.fasta").open(
+                encoding="utf-8"
+            ) as handle:
+                aligned_ids = [record.id for record in SeqIO.parse(handle, "fasta")]
+            coordinate_columns = (
+                outdir / "alignment" / "coordinate_map.tsv"
+            ).read_text(encoding="utf-8").splitlines()[0].split("\t")
+
+        self.assertEqual(
+            mafft_runner.input_records,
+            [
+                ("geison-00000001", "ACGTACCCACGT"),
+                ("geison-00000000", "ACGTACGTACGT"),
+            ],
+        )
+        self.assertEqual(qc_report["evaluation_set"]["sequence_ids"], ["s1", "s2", "s3"])
+        self.assertEqual(qc_report["discovery_set"]["sequence_ids"], ["s1", "s3"])
+        self.assertEqual(qc_report["alignment"], {
+            "status": "COMPLETE",
+            "reference_id": "s3",
+            "reference_mode": "explicit",
+        })
+        self.assertEqual(summary.sequence_ids, ["s1", "s2", "s3"])
+        self.assertEqual(aligned_ids, ["s1", "s3"])
+        self.assertEqual(
+            coordinate_columns,
+            ["alignment_position", "reference_position", "reference_base"],
+        )
+
     def test_disabled_local_clustering_does_not_call_runner_and_keeps_evaluation_set(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
-            with patch("qpcr_pipeline.clustering.SubprocessCdHitRunner") as runner_factory:
+            with patch("qpcr_pipeline.clustering.SubprocessCdHitRunner") as runner_factory, patch(
+                "qpcr_pipeline.alignment.SubprocessMafftRunner"
+            ) as mafft_runner_factory:
                 summary = run_pipeline(
                     PipelineConfig(
                         target_name="synthetic-target", input_fasta=FIXTURE_FASTA
@@ -185,8 +278,14 @@ class MinimalPipelineRunTests(unittest.TestCase):
             qc_report = json.loads(
                 (outdir / "qc_report.json").read_text(encoding="utf-8")
             )
+            alignment_report = json.loads(
+                (outdir / "alignment" / "alignment_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
 
         runner_factory.assert_not_called()
+        mafft_runner_factory.assert_not_called()
         self.assertEqual(summary.sequence_ids, ["seq-1", "seq-2", "seq-3"])
         self.assertEqual(
             qc_report["evaluation_set"]["sequence_ids"], ["seq-1", "seq-2", "seq-3"]
@@ -194,6 +293,11 @@ class MinimalPipelineRunTests(unittest.TestCase):
         self.assertEqual(
             qc_report["discovery_set"]["sequence_ids"], ["seq-1", "seq-2", "seq-3"]
         )
+        self.assertEqual(
+            qc_report["alignment"],
+            {"status": "SKIPPED", "reference_id": None, "reference_mode": None},
+        )
+        self.assertEqual(alignment_report["status"], "SKIPPED")
 
     def test_run_rejects_invalid_clustering_config_before_creating_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -233,7 +337,9 @@ class MinimalPipelineRunTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
-            with patch("qpcr_pipeline.clustering.SubprocessCdHitRunner") as runner_factory:
+            with patch("qpcr_pipeline.clustering.SubprocessCdHitRunner") as runner_factory, patch(
+                "qpcr_pipeline.alignment.SubprocessMafftRunner"
+            ) as mafft_runner_factory:
                 summary = run_pipeline(
                     PipelineConfig(
                         target_name="synthetic-target",
@@ -248,8 +354,14 @@ class MinimalPipelineRunTests(unittest.TestCase):
             effective_manifest = json.loads(
                 (outdir / "ncbi_dataset_manifest.json").read_text(encoding="utf-8")
             )
+            alignment_report = json.loads(
+                (outdir / "alignment" / "alignment_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
 
         runner_factory.assert_not_called()
+        mafft_runner_factory.assert_not_called()
         self.assertEqual(summary.sequence_ids, [valid_accession])
         self.assertEqual(
             qc_report["records"],
@@ -264,6 +376,11 @@ class MinimalPipelineRunTests(unittest.TestCase):
         )
         self.assertEqual(qc_report["evaluation_set"]["sequence_ids"], [valid_accession])
         self.assertEqual(qc_report["discovery_set"]["sequence_ids"], [valid_accession])
+        self.assertEqual(
+            qc_report["alignment"],
+            {"status": "SKIPPED", "reference_id": None, "reference_mode": None},
+        )
+        self.assertEqual(alignment_report["status"], "SKIPPED")
         self.assertEqual(effective_manifest["status"], "COMPLETE")
 
     def test_run_uses_frozen_ncbi_dataset_without_mutating_its_source(self):
@@ -388,16 +505,54 @@ class MinimalPipelineRunTests(unittest.TestCase):
                     query="example[Organism]", accessions=("NC_1",)
                 ),
             ),
+            PipelineConfig(
+                target_name="invalid-alignment",
+                input_fasta=FIXTURE_FASTA,
+                alignment=AlignmentConfig(threads=0),
+            ),
         )
 
         for config in cases:
             with self.subTest(config=config), tempfile.TemporaryDirectory() as tmpdir:
                 outdir = Path(tmpdir) / "run"
 
-                with self.assertRaisesRegex(ValueError, "Exactly one|exactly one"):
+                with self.assertRaisesRegex(ValueError, "Exactly one|exactly one|Alignment threads"):
                     run_pipeline(config, outdir)
 
                 self.assertFalse(outdir.exists())
+
+    def test_enabled_alignment_rejects_reference_outside_discovery_without_calling_mafft(self):
+        class FailingMafftRunner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, input_path, output_path, config):
+                self.calls.append((input_path, output_path, config))
+                raise AssertionError("MAFFT must not run for a reference outside Discovery")
+
+        runner = FailingMafftRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "run"
+            with self.assertRaisesRegex(MafftError, "not in the Discovery Set"):
+                run_pipeline(
+                    PipelineConfig(
+                        target_name="synthetic-target",
+                        input_fasta=FIXTURE_FASTA,
+                        alignment=AlignmentConfig(enabled=True, reference_id="missing"),
+                    ),
+                    outdir,
+                    mafft_runner=runner,
+                )
+
+            report_path = outdir / "alignment" / "alignment_report.json"
+            report_status = (
+                json.loads(report_path.read_text(encoding="utf-8"))["status"]
+                if report_path.exists()
+                else None
+            )
+
+        self.assertEqual(runner.calls, [])
+        self.assertNotEqual(report_status, "COMPLETE")
 
     def test_run_atomically_replaces_summary_and_qc_hardlinks_to_frozen_artifacts(self):
         accession = "NC_FROZEN.1"
