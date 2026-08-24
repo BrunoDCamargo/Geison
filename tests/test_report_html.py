@@ -82,6 +82,37 @@ class ConservationReportHtmlTests(unittest.TestCase):
         self.assertIn('addEventListener("pointerdown"', html)
         self.assertIn("textContent", html)
 
+    def test_template_marker_text_round_trips_without_post_serialization_replacement(self):
+        marker_text = "target __EMPTY_HIDDEN__ annotation"
+
+        html = self.render(
+            target_name=marker_text,
+            windows=(window(1, 0.95, 0.85, 1.0, 0.2),),
+            annotations=(ReferenceAnnotation("gene", 1, 25, 1, marker_text),),
+        )
+        data = embedded_data(html)
+
+        self.assertEqual(data["identity"]["targetName"], marker_text)
+        self.assertEqual(data["annotations"][0][4], marker_text)
+
+    def test_peak_and_trace_drawing_is_clipped_before_axes_are_drawn(self):
+        html = self.render(windows=(window(1, 0.95, 0.85, 1.0, 0.2),))
+
+        save = html.index("context.save();", html.index("function draw()"))
+        clip = html.index("context.clip();", save)
+        peak = html.index("context.fillRect(xFor(item[0])", clip)
+        conservation = html.index('drawTrace(items,3,"#1769aa")', peak)
+        coverage = html.index('drawTrace(items,5,"#d65f00")', conservation)
+        restore = html.index("context.restore();", coverage)
+        axes = html.index('context.fillText(formatCoordinate(viewStart)', restore)
+
+        self.assertLess(save, clip)
+        self.assertLess(clip, peak)
+        self.assertLess(peak, conservation)
+        self.assertLess(conservation, coverage)
+        self.assertLess(coverage, restore)
+        self.assertLess(restore, axes)
+
     def test_top_windows_are_ranked_by_the_scientific_tie_breakers(self):
         windows = (
             window(1, 0.80, 0.70, 0.90, 0.50),

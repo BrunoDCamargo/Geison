@@ -70,11 +70,8 @@ def render_conservation_html(
         ],
     }
     empty_hidden = "" if not windows else " hidden"
-    return (
-        _REPORT_TEMPLATE.replace("__REPORT_DATA__", _safe_json(payload)).replace(
-            "__EMPTY_HIDDEN__", empty_hidden
-        )
-    )
+    template = _REPORT_TEMPLATE.replace("__EMPTY_HIDDEN__", empty_hidden)
+    return template.replace("__REPORT_DATA__", _safe_json(payload))
 
 
 _REPORT_TEMPLATE = """<!doctype html>
@@ -215,12 +212,19 @@ function draw(){
   if(!windows.length)return;
   const items=visibleWindows();
   const topKeys=new Set(reportData.topWindows.map(item=>`${item[0]}:${item[1]}`));
+  context.save();
+  context.beginPath();
+  context.rect(plotLeft(),plotTop(),plotRight()-plotLeft(),plotBottom()-plotTop());
+  context.clip();
   for(const item of items){
     if(topKeys.has(`${item[0]}:${item[1]}`)){
       context.fillStyle="#fff0b3";
       context.fillRect(xFor(item[0]),plotTop(),Math.max(1,xFor(item[1])-xFor(item[0])),plotBottom()-plotTop());
     }
   }
+  drawTrace(items,3,"#1769aa");
+  drawTrace(items,5,"#d65f00");
+  context.restore();
   context.strokeStyle="#d8deea";
   context.fillStyle="#596579";
   context.font="12px system-ui,sans-serif";
@@ -231,8 +235,6 @@ function draw(){
     context.beginPath();context.moveTo(plotLeft(),y);context.lineTo(plotRight(),y);context.stroke();
     context.fillText(value.toFixed(2),plotLeft()-7,y+4);
   }
-  drawTrace(items,3,"#1769aa");
-  drawTrace(items,5,"#d65f00");
   context.textAlign="left";
   context.fillStyle="#596579";
   context.fillText(formatCoordinate(viewStart),plotLeft(),plotBottom()+18);
