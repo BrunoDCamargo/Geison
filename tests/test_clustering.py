@@ -16,10 +16,10 @@ from qpcr_pipeline.models import DiscoverySet, EvaluationSet
 
 VALID_CLUSTER_TEXT = (
     ">Cluster 9\n"
-    "0 8nt, >geison-00000002... *\n"
-    "1 8nt, >geison-00000000... at +/99.00%\n"
+    "0 12nt, >geison-00000002... *\n"
+    "1 12nt, >geison-00000000... at +/99.00%\n"
     ">Cluster 2\n"
-    "0 8nt, >geison-00000001... *\n"
+    "0 12nt, >geison-00000001... *\n"
 )
 
 
@@ -64,8 +64,8 @@ class SubprocessCdHitRunnerTests(unittest.TestCase):
             root = Path(tmpdir)
             input_path = root / "input sequences.fasta"
             output_path = root / "representatives output.fasta"
-            input_path.write_text(">sequence\nACGT\n", encoding="utf-8")
-            output_path.write_text(">sequence\nACGT\n", encoding="utf-8")
+            input_path.write_text(">sequence\nACGTACGTAC\n", encoding="utf-8")
+            output_path.write_text(">sequence\nACGTACGTAC\n", encoding="utf-8")
             Path(str(output_path) + ".clstr").write_text(">Cluster 0\n", encoding="utf-8")
 
             with mock.patch("qpcr_pipeline.clustering.shutil.which", return_value="C:/tools/cd-hit-est.exe") as which, mock.patch(
@@ -82,6 +82,7 @@ class SubprocessCdHitRunnerTests(unittest.TestCase):
                 "-o", str(output_path),
                 "-c", "0.95",
                 "-n", "10",
+                "-l", "9",
                 "-d", "0",
                 "-g", "1",
                 "-r", "0",
@@ -159,10 +160,10 @@ class SubprocessCdHitRunnerTests(unittest.TestCase):
 class DefaultRunnerTests(unittest.TestCase):
     def test_default_runner_is_constructed_only_for_enabled_nonempty_clustering(self):
         # Constructing the external-tool runner for bypass paths would make those paths depend on CD-HIT.
-        records = (LocalSequenceRecord("seq-1", "ACGTACGT"),)
+        records = (LocalSequenceRecord("seq-1", "ACGTACGTACGT"),)
         evaluation_set = EvaluationSet(("seq-1",))
         fake_runner = FakeCdHitRunner(
-            ("geison-00000000",), ">Cluster 0\n0 8nt, >geison-00000000... *\n"
+            ("geison-00000000",), ">Cluster 0\n0 12nt, >geison-00000000... *\n"
         )
         with mock.patch(
             "qpcr_pipeline.clustering.SubprocessCdHitRunner", return_value=fake_runner
@@ -181,9 +182,9 @@ class DefaultRunnerTests(unittest.TestCase):
 class ClusteringTests(unittest.TestCase):
     def setUp(self):
         self.records = (
-            LocalSequenceRecord("seq-0", "ACGTACGT"),
-            LocalSequenceRecord("seq-1", "GGGGCCCC"),
-            LocalSequenceRecord("seq-2", "TTAATTAA"),
+            LocalSequenceRecord("seq-0", "ACGTACGTACGT"),
+            LocalSequenceRecord("seq-1", "GGGGCCCCGGGG"),
+            LocalSequenceRecord("seq-2", "TTAATTAATTAA"),
         )
         self.evaluation_set = EvaluationSet(("seq-0", "seq-1", "seq-2"))
 
@@ -197,10 +198,49 @@ class ClusteringTests(unittest.TestCase):
             (0.88, 7),
             (0.85, 6),
             (0.80, 5),
-            (0.75, 4),
         ):
             with self.subTest(identity=identity):
                 self.assertEqual(derive_word_length(identity), expected)
+
+        with self.assertRaisesRegex(ValueError, "0.80 and 1.0"):
+            derive_word_length(0.799)
+
+    def test_parses_literal_cdhit_4_8_1_tab_separated_member_line(self):
+        cluster_text = (
+            Path(__file__).parent / "fixtures" / "cdhit_est_4_8_1.clstr"
+        ).read_text(encoding="utf-8")
+        records = (LocalSequenceRecord("seq-tab", "ACGTACGTAC"),)
+        runner = FakeCdHitRunner(("geison-00000000",), cluster_text)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = cluster_sequences(
+                records,
+                EvaluationSet(("seq-tab",)),
+                ClusteringConfig(enabled=True),
+                Path(tmpdir),
+                runner=runner,
+            )
+
+        self.assertEqual(result.discovery_set, DiscoverySet(("seq-tab",)))
+
+    def test_rejects_records_shorter_than_word_length_before_runner_or_report(self):
+        records = (LocalSequenceRecord("too-short", "ACGTACGTA"),)
+        runner = FailingCdHitRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with self.assertRaisesRegex(
+                CdHitError, "too-short.*minimum length of 10 nt"
+            ):
+                cluster_sequences(
+                    records,
+                    EvaluationSet(("too-short",)),
+                    ClusteringConfig(enabled=True, identity=0.95),
+                    output_dir,
+                    runner=runner,
+                )
+
+            self.assertEqual(runner.calls, [])
+            self.assertFalse((output_dir / "clustering_report.json").exists())
 
     def test_enabled_clustering_restores_ids_and_stabilizes_cluster_order(self):
         runner = FakeCdHitRunner(
@@ -249,7 +289,7 @@ class ClusteringTests(unittest.TestCase):
         )
         self.assertEqual(
             [(record.id, str(record.seq)) for record in fasta_records],
-            [("seq-1", "GGGGCCCC"), ("seq-2", "TTAATTAA")],
+            [("seq-1", "GGGGCCCCGGGG"), ("seq-2", "TTAATTAATTAA")],
         )
         self.assertEqual(raw_text, VALID_CLUSTER_TEXT)
         self.assertEqual(report["clusters"][0]["cluster_id"], "cluster-00000")
@@ -292,6 +332,40 @@ class ClusteringTests(unittest.TestCase):
         self.assertEqual(raw_cluster, "")
         self.assertEqual(report["status"], "COMPLETE")
         self.assertEqual(report["artifacts"]["raw_cluster"], "clustering/cd-hit-est.clstr")
+
+    def test_disabled_rerun_removes_only_stale_raw_cluster_artifact(self):
+        enabled_runner = FakeCdHitRunner(
+            ("geison-00000002", "geison-00000001"), VALID_CLUSTER_TEXT
+        )
+        disabled_runner = FailingCdHitRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            enabled_result = cluster_sequences(
+                self.records,
+                self.evaluation_set,
+                ClusteringConfig(enabled=True),
+                output_dir,
+                runner=enabled_runner,
+            )
+            sibling = output_dir / "clustering" / "keep-me.txt"
+            sibling.write_text("preserve", encoding="utf-8")
+
+            disabled_result = cluster_sequences(
+                self.records,
+                self.evaluation_set,
+                ClusteringConfig(),
+                output_dir,
+                runner=disabled_runner,
+            )
+            report = json.loads(disabled_result.report_path.read_text(encoding="utf-8"))
+
+            self.assertFalse(enabled_result.raw_cluster_path.exists())
+            self.assertEqual(sibling.read_text(encoding="utf-8"), "preserve")
+
+        self.assertEqual(disabled_runner.calls, [])
+        self.assertIsNone(disabled_result.raw_cluster_path)
+        self.assertEqual(report["status"], "COMPLETE")
+        self.assertIsNone(report["artifacts"]["raw_cluster"])
 
     def test_publishes_complete_traceable_artifacts_without_internal_ids(self):
         runner = FakeCdHitRunner(

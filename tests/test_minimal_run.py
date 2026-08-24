@@ -63,10 +63,10 @@ class MinimalPipelineRunTests(unittest.TestCase):
                 )
                 Path(str(output_path) + ".clstr").write_text(
                     ">Cluster 0\n"
-                    "0 8nt, >geison-00000000... *\n"
-                    "1 8nt, >geison-00000001... at +/99.00%\n"
+                    "0 12nt, >geison-00000000... *\n"
+                    "1 12nt, >geison-00000001... at +/99.00%\n"
                     ">Cluster 1\n"
-                    "0 8nt, >geison-00000002... *\n",
+                    "0 12nt, >geison-00000002... *\n",
                     encoding="utf-8",
                 )
 
@@ -77,13 +77,13 @@ class MinimalPipelineRunTests(unittest.TestCase):
             outdir = tmp_path / "run"
             fasta_path.write_text(
                 ">rejected\n"
-                "ACGTXCGT\n"
+                "ACGTXCGTACGT\n"
                 ">s1\n"
-                "ACGTACGT\n"
+                "ACGTACGTACGT\n"
                 ">s2\n"
-                "ACGTACGA\n"
+                "ACGTACGAACGT\n"
                 ">s3\n"
-                "ACGTACCC\n",
+                "ACGTACCCACGT\n",
                 encoding="utf-8",
             )
 
@@ -110,9 +110,9 @@ class MinimalPipelineRunTests(unittest.TestCase):
         self.assertEqual(
             runner.input_records,
             [
-                ("geison-00000000", "ACGTACGT"),
-                ("geison-00000001", "ACGTACGA"),
-                ("geison-00000002", "ACGTACCC"),
+                ("geison-00000000", "ACGTACGTACGT"),
+                ("geison-00000001", "ACGTACGAACGT"),
+                ("geison-00000002", "ACGTACCCACGT"),
             ],
         )
 
@@ -199,12 +199,12 @@ class MinimalPipelineRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
 
-            with self.assertRaisesRegex(ValueError, "identity.*0.75 and 1.0"):
+            with self.assertRaisesRegex(ValueError, "identity.*0.80 and 1.0"):
                 run_pipeline(
                     PipelineConfig(
                         target_name="synthetic-target",
                         input_fasta=FIXTURE_FASTA,
-                        clustering=ClusteringConfig(identity=0.74),
+                        clustering=ClusteringConfig(identity=0.799),
                     ),
                     outdir,
                 )
