@@ -14,6 +14,14 @@ class QCConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ClusteringConfig:
+    enabled: bool = False
+    identity: float = 0.95
+    threads: int = 1
+    memory_mb: int = 800
+
+
+@dataclass(frozen=True, slots=True)
 class NcbiInputConfig:
     query: str | None = None
     accessions: tuple[str, ...] = ()
@@ -30,6 +38,7 @@ class PipelineConfig:
     input_genbank: Path | None = None
     input_ncbi: NcbiInputConfig | None = None
     qc: QCConfig = field(default_factory=QCConfig)
+    clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
 
     @property
     def selected_input(
@@ -57,6 +66,8 @@ def load_config(path: str | Path) -> PipelineConfig:
     qc_config = raw.get("qc", {})
     if not isinstance(qc_config, dict):
         raise ValueError("Configuration section 'qc' must be a mapping.")
+    clustering_config = raw.get("clustering", {})
+    clustering = _parse_clustering_config(clustering_config)
 
     target_name = _required_string(target, "name", section="target")
     input_fasta = _optional_path(input_config, "fasta")
@@ -73,6 +84,7 @@ def load_config(path: str | Path) -> PipelineConfig:
             expected_length=_optional_integer(qc_config, "expected_length"),
             length_tolerance_fraction=_optional_number(qc_config, "length_tolerance_fraction"),
         ),
+        clustering=clustering,
     )
     validate_pipeline_config(config)
     return config
@@ -105,6 +117,9 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         )
     if not isinstance(config.qc, QCConfig):
         raise ValueError("Pipeline qc must be a QCConfig.")
+    if not isinstance(config.clustering, ClusteringConfig):
+        raise ValueError("Pipeline clustering must be a ClusteringConfig.")
+    validate_clustering_config(config.clustering)
     if config.input_ncbi is not None:
         validate_ncbi_input_config(config.input_ncbi)
 
@@ -174,6 +189,31 @@ def validate_ncbi_input_config(
     return "frozen"
 
 
+def validate_clustering_config(config: ClusteringConfig) -> None:
+    if not isinstance(config, ClusteringConfig):
+        raise ValueError("Clustering configuration must be a ClusteringConfig.")
+    if not isinstance(config.enabled, bool):
+        raise ValueError("Clustering enabled must be a boolean.")
+    if (
+        isinstance(config.identity, bool)
+        or not isinstance(config.identity, (int, float))
+        or not 0.75 <= config.identity <= 1.0
+    ):
+        raise ValueError("Clustering identity must be a number between 0.75 and 1.0.")
+    if (
+        isinstance(config.threads, bool)
+        or not isinstance(config.threads, int)
+        or not 1 <= config.threads <= 256
+    ):
+        raise ValueError("Clustering threads must be an integer between 1 and 256.")
+    if (
+        isinstance(config.memory_mb, bool)
+        or not isinstance(config.memory_mb, int)
+        or config.memory_mb < 1
+    ):
+        raise ValueError("Clustering memory_mb must be a positive integer.")
+
+
 def _validate_ncbi_config_integer(
     value: object, field_name: str, *, minimum: int, maximum: int
 ) -> None:
@@ -200,6 +240,26 @@ def _required_string(raw: dict[str, Any], key: str, *, section: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Configuration value '{section}.{key}' must be a non-empty string.")
     return value
+
+
+def _parse_clustering_config(raw: Any) -> ClusteringConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration section 'clustering' must be a mapping.")
+    allowed_fields = {"enabled", "identity", "threads", "memory_mb"}
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ValueError(
+            f"Configuration section 'clustering' fields {rendered} are unrecognized."
+        )
+    config = ClusteringConfig(
+        enabled=raw.get("enabled", False),
+        identity=raw.get("identity", 0.95),
+        threads=raw.get("threads", 1),
+        memory_mb=raw.get("memory_mb", 800),
+    )
+    validate_clustering_config(config)
+    return config
 
 
 def _optional_path(raw: dict[str, Any], key: str) -> Path | None:
