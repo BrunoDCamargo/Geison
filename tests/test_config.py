@@ -2,7 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qpcr_pipeline.config import ClusteringConfig, NcbiInputConfig, PipelineConfig, load_config
+from qpcr_pipeline.config import (
+    AlignmentConfig,
+    ClusteringConfig,
+    NcbiInputConfig,
+    PipelineConfig,
+    load_config,
+)
 
 
 FIXTURE_FASTA = Path("tests/fixtures/target_small.fasta")
@@ -317,6 +323,63 @@ class PipelineConfigTests(unittest.TestCase):
             config.clustering,
             ClusteringConfig(enabled=True, identity=0.9, threads=4, memory_mb=2048),
         )
+
+    def test_loads_alignment_configuration_and_defaults_when_omitted(self):
+        config = self._load_yaml(
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+        )
+        self.assertEqual(config.alignment, AlignmentConfig())
+
+        config = self._load_yaml(
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+            "alignment:\n"
+            "  enabled: true\n"
+            "  threads: 4\n"
+            "  reference_id: seq-1\n"
+        )
+        self.assertEqual(
+            config.alignment,
+            AlignmentConfig(enabled=True, threads=4, reference_id="seq-1"),
+        )
+
+    def test_rejects_invalid_alignment_yaml_configuration(self):
+        invalid_cases = (
+            ("unknown key", "  extra: true\n", "alignment.*unrecognized"),
+            ("enabled integer", "  enabled: 1\n", "enabled.*boolean"),
+            ("threads bool", "  threads: true\n", "threads.*integer"),
+            ("threads fractional", "  threads: 1.5\n", "threads.*integer"),
+            ("threads zero", "  threads: 0\n", "threads.*1.*256"),
+            ("threads high", "  threads: 257\n", "threads.*1.*256"),
+            ("numeric reference", "  reference_id: 7\n", "reference_id.*non-blank string"),
+            ("empty reference", "  reference_id: \"\"\n", "reference_id.*non-blank string"),
+            ("whitespace reference", "  reference_id: \" \"\n", "reference_id.*non-blank string"),
+        )
+        for name, alignment_yaml, message in invalid_cases:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                self._load_yaml(
+                    "target:\n  name: target\n"
+                    f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+                    "alignment:\n" + alignment_yaml
+                )
+
+    def test_selected_input_rejects_invalid_direct_alignment_configuration(self):
+        for alignment in (
+            AlignmentConfig(enabled=1),
+            AlignmentConfig(threads=True),
+            AlignmentConfig(threads=0),
+            AlignmentConfig(reference_id=7),
+            AlignmentConfig(reference_id=" "),
+        ):
+            with self.subTest(alignment=alignment):
+                config = PipelineConfig(
+                    target_name="target",
+                    input_fasta=FIXTURE_FASTA,
+                    alignment=alignment,
+                )
+                with self.assertRaises(ValueError):
+                    _ = config.selected_input
 
     def test_rejects_invalid_clustering_yaml_configuration(self):
         invalid_cases = (
