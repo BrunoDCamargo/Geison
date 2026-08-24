@@ -1,9 +1,10 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -13,6 +14,7 @@ from qpcr_pipeline.alignment import (
     AlignedSequence,
     AlignmentCoordinate,
     MafftError,
+    SubprocessMafftRunner,
     align_discovery,
 )
 from qpcr_pipeline.config import AlignmentConfig
@@ -56,6 +58,124 @@ class RaisingRunner:
 class EmptyOutputRunner:
     def run(self, input_path, output_path, config):
         Path(output_path).write_text("", encoding="utf-8")
+
+
+class SubprocessMafftRunnerTests(unittest.TestCase):
+    def test_runs_resolved_mafft_with_safe_fixed_arguments_and_writes_stdout(self):
+        runner = SubprocessMafftRunner("configured mafft")
+        resolved_executable = r"C:\Program Files\MAFFT\mafft.bat"
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=">aligned\nACGT\n", stderr=""
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input with spaces.fasta"
+            output_path = Path(tmpdir) / "output with spaces.fasta"
+            with patch("qpcr_pipeline.alignment.shutil.which", return_value=resolved_executable) as which, patch(
+                "qpcr_pipeline.alignment.subprocess.run", return_value=completed
+            ) as run:
+                runner.run(input_path, output_path, AlignmentConfig(enabled=True, threads=4))
+
+            self.assertEqual(output_path.read_text(encoding="utf-8"), ">aligned\nACGT\n")
+
+        which.assert_called_once_with("configured mafft")
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                resolved_executable,
+                "--auto",
+                "--nuc",
+                "--inputorder",
+                "--adjustdirectionaccurately",
+                "--thread", "4",
+                "--threadit", "0",
+                "--quiet",
+                str(input_path),
+            ],
+        )
+        self.assertEqual(
+            run.call_args.kwargs,
+            {"capture_output": True, "text": True, "check": False},
+        )
+
+    def test_missing_configured_executable_explains_how_to_recover(self):
+        with patch("qpcr_pipeline.alignment.shutil.which", return_value=None):
+            with self.assertRaisesRegex(
+                MafftError,
+                "'mafft-custom' was not found on PATH; install MAFFT or disable alignment\\.",
+            ):
+                SubprocessMafftRunner("mafft-custom").run(
+                    Path("input.fasta"), Path("output.fasta"), AlignmentConfig(enabled=True)
+                )
+
+    def test_nonzero_exit_includes_bounded_normalized_stderr(self):
+        stderr = "first line\r\n" + ("x" * 2_100) + "\nlast line"
+        completed = subprocess.CompletedProcess(args=[], returncode=7, stdout="", stderr=stderr)
+        with patch("qpcr_pipeline.alignment.shutil.which", return_value="mafft"), patch(
+            "qpcr_pipeline.alignment.subprocess.run", return_value=completed
+        ):
+            with self.assertRaises(MafftError) as raised:
+                SubprocessMafftRunner().run(
+                    Path("input.fasta"), Path("output.fasta"), AlignmentConfig(enabled=True)
+                )
+
+        message = str(raised.exception)
+        stderr_excerpt = message.rsplit(": ", maxsplit=1)[-1]
+        self.assertIn("MAFFT exited with status 7", message)
+        self.assertNotIn("\n", stderr_excerpt)
+        self.assertLessEqual(len(stderr_excerpt), 2_000)
+
+    def test_success_with_empty_stdout_is_rejected(self):
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=" \n\t", stderr="")
+        with patch("qpcr_pipeline.alignment.shutil.which", return_value="mafft"), patch(
+            "qpcr_pipeline.alignment.subprocess.run", return_value=completed
+        ):
+            with self.assertRaisesRegex(MafftError, "empty alignment output"):
+                SubprocessMafftRunner().run(
+                    Path("input.fasta"), Path("output.fasta"), AlignmentConfig(enabled=True)
+                )
+
+
+class DefaultRunnerTests(unittest.TestCase):
+    def setUp(self):
+        self.records = (record("first", "ACGT"), record("second", "ACGA"))
+        self.discovery = DiscoverySet(("first", "second"))
+
+    def test_constructs_and_uses_default_runner_only_for_multiple_enabled_records(self):
+        fake_runner = Mock()
+
+        def write_alignment(input_path, output_path, config):
+            del input_path, config
+            Path(output_path).write_text(
+                ">geison-00000000\nACGT\n>geison-00000001\nACGA\n",
+                encoding="utf-8",
+            )
+
+        fake_runner.run.side_effect = write_alignment
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "qpcr_pipeline.alignment.SubprocessMafftRunner", return_value=fake_runner
+        ) as factory:
+            align_discovery(
+                self.records,
+                self.discovery,
+                AlignmentConfig(enabled=False),
+                Path(tmpdir),
+            )
+            align_discovery(
+                (), DiscoverySet(()), AlignmentConfig(enabled=True), Path(tmpdir)
+            )
+            align_discovery(
+                self.records[:1], DiscoverySet(("first",)), AlignmentConfig(enabled=True), Path(tmpdir)
+            )
+            result = align_discovery(
+                self.records,
+                self.discovery,
+                AlignmentConfig(enabled=True),
+                Path(tmpdir),
+            )
+
+        self.assertEqual(result.status, "COMPLETE")
+        factory.assert_called_once_with()
+        fake_runner.run.assert_called_once()
 
 
 class MissingOutputRunner:
@@ -316,13 +436,6 @@ class AlignmentTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 self._run(runner=runner, directory=tmpdir)
             self._assert_no_complete_report(tmpdir)
-
-    def test_enabled_multiple_records_requires_an_injected_runner_for_now(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(MafftError, "runner.*Task 3|inject"):
-                self._run(directory=tmpdir)
-            self._assert_no_complete_report(tmpdir)
-
 
 if __name__ == "__main__":
     unittest.main()
