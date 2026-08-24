@@ -5,6 +5,7 @@ from pathlib import Path
 from qpcr_pipeline.config import (
     AlignmentConfig,
     ClusteringConfig,
+    ConservationConfig,
     NcbiInputConfig,
     PipelineConfig,
     load_config,
@@ -343,6 +344,100 @@ class PipelineConfigTests(unittest.TestCase):
             config.alignment,
             AlignmentConfig(enabled=True, threads=4, reference_id="seq-1"),
         )
+
+    def test_loads_conservation_configuration_and_defaults_when_omitted(self):
+        minimal_yaml = (
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+            "alignment:\n  enabled: true\n"
+        )
+        config = self._load_yaml(
+            minimal_yaml
+            + "conservation:\n"
+            + "  enabled: true\n"
+            + "  window_size: 120\n"
+            + "  step_size: 12\n"
+        )
+        self.assertEqual(
+            config.conservation,
+            ConservationConfig(enabled=True, window_size=120, step_size=12),
+        )
+        self.assertEqual(self._load_yaml(minimal_yaml).conservation, ConservationConfig())
+
+    def test_rejects_invalid_conservation_yaml_configuration(self):
+        invalid_cases = (
+            ("non-mapping", "conservation: true\n", "conservation.*mapping"),
+            (
+                "unknown key",
+                "conservation:\n  extra: true\n",
+                "conservation.*extra.*unrecognized",
+            ),
+            (
+                "enabled integer",
+                "conservation:\n  enabled: 1\n",
+                "enabled.*boolean",
+            ),
+            (
+                "window bool",
+                "conservation:\n  window_size: true\n",
+                "window_size.*integer",
+            ),
+            (
+                "window fractional",
+                "conservation:\n  window_size: 1.5\n",
+                "window_size.*integer",
+            ),
+            (
+                "window zero",
+                "conservation:\n  window_size: 0\n",
+                "window_size.*1.*1000000",
+            ),
+            (
+                "step high",
+                "conservation:\n  step_size: 1000001\n",
+                "step_size.*1.*1000000",
+            ),
+            (
+                "step greater than window",
+                "conservation:\n  window_size: 10\n  step_size: 11\n",
+                "step_size.*cannot exceed.*window_size",
+            ),
+        )
+        for name, conservation_yaml, message in invalid_cases:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                self._load_yaml(
+                    "target:\n  name: target\n"
+                    f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+                    + conservation_yaml
+                )
+
+    def test_selected_input_rejects_invalid_direct_conservation_configuration(self):
+        invalid = (
+            ConservationConfig(enabled=1),
+            ConservationConfig(window_size=True),
+            ConservationConfig(window_size=1.5),
+            ConservationConfig(window_size=0),
+            ConservationConfig(step_size=1_000_001),
+            ConservationConfig(window_size=10, step_size=11),
+        )
+        for conservation in invalid:
+            with self.subTest(conservation=conservation):
+                config = PipelineConfig(
+                    target_name="target",
+                    input_fasta=FIXTURE_FASTA,
+                    conservation=conservation,
+                )
+                with self.assertRaises(ValueError):
+                    _ = config.selected_input
+
+        config = PipelineConfig(
+            target_name="target",
+            input_fasta=FIXTURE_FASTA,
+            alignment=AlignmentConfig(enabled=False),
+            conservation=ConservationConfig(enabled=True),
+        )
+        with self.assertRaisesRegex(ValueError, "requires enabled alignment"):
+            _ = config.selected_input
 
     def test_rejects_invalid_alignment_yaml_configuration(self):
         invalid_cases = (
