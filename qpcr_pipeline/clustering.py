@@ -54,12 +54,14 @@ class SubprocessCdHitRunner:
                 f"{self.executable!r} was not found on PATH; install CD-HIT or disable clustering."
             )
 
+        word_length = derive_word_length(config.identity)
         args = [
             executable,
             "-i", str(input_path),
             "-o", str(output_path),
             "-c", str(config.identity),
-            "-n", str(derive_word_length(config.identity)),
+            "-n", str(word_length),
+            "-l", str(word_length - 1),
             "-d", "0",
             "-g", "1",
             "-r", "0",
@@ -126,7 +128,7 @@ class _ParsedCluster:
 
 _HEADER_PATTERN = re.compile(r"^>Cluster (?P<cluster_id>[0-9]+)$")
 _MEMBER_PATTERN = re.compile(
-    r"^(?P<ordinal>[0-9]+) (?P<length>[0-9]+)nt, "
+    r"^(?P<ordinal>[0-9]+)[ \t]+(?P<length>[0-9]+)nt, "
     r">(?P<internal_id>[A-Za-z0-9][A-Za-z0-9._-]*)\.\.\. "
     r"(?:(?P<representative>\*)|at (?P<strand>[+-])/(?P<identity>[0-9]+(?:\.[0-9]+)?)%)$"
 )
@@ -134,8 +136,8 @@ _MEMBER_PATTERN = re.compile(
 
 def derive_word_length(identity: float) -> int:
     """Return the CD-HIT-EST word length compatible with ``identity``."""
-    if not 0.75 <= identity <= 1.0:
-        raise ValueError("CD-HIT identity must be between 0.75 and 1.0.")
+    if not 0.80 <= identity <= 1.0:
+        raise ValueError("CD-HIT identity must be between 0.80 and 1.0.")
     if identity >= 0.95:
         return 10
     if identity >= 0.90:
@@ -144,9 +146,7 @@ def derive_word_length(identity: float) -> int:
         return 7
     if identity >= 0.85:
         return 6
-    if identity >= 0.80:
-        return 5
-    return 4
+    return 5
 
 
 def cluster_sequences(
@@ -172,6 +172,11 @@ def cluster_sequences(
         clusters = ()
         raw_cluster_text = ""
     else:
+        _validate_minimum_lengths(
+            records_by_id,
+            evaluation_ids,
+            derive_word_length(config.identity),
+        )
         if runner is None:
             runner = SubprocessCdHitRunner()
         discovery_ids, clusters, raw_cluster_text = _run_and_parse(
@@ -224,6 +229,21 @@ def _validated_records(
             "Approved records must contain exactly the Evaluation Set sequence IDs."
         )
     return {record.sequence_id: record for record in records}
+
+
+def _validate_minimum_lengths(
+    records_by_id: dict[str, LocalSequenceRecord],
+    evaluation_ids: tuple[str, ...],
+    minimum_length: int,
+) -> None:
+    for sequence_id in evaluation_ids:
+        sequence_length = len(records_by_id[sequence_id].sequence)
+        if sequence_length < minimum_length:
+            raise CdHitError(
+                f"Approved sequence {sequence_id!r} has length {sequence_length} nt; "
+                f"CD-HIT-EST requires a minimum length of {minimum_length} nt "
+                "for the configured identity."
+            )
 
 
 def _run_and_parse(
@@ -433,6 +453,10 @@ def _publish_artifacts(
     _atomic_write_text(discovery_fasta_path, fasta_text)
     if raw_cluster_path is not None and raw_cluster_text is not None:
         _atomic_write_text(raw_cluster_path, raw_cluster_text)
+    else:
+        (report_path.parent / "clustering" / "cd-hit-est.clstr").unlink(
+            missing_ok=True
+        )
     _atomic_write_text(
         report_path, json.dumps(report, indent=2, sort_keys=True) + "\n"
     )

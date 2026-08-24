@@ -197,9 +197,9 @@ def validate_clustering_config(config: ClusteringConfig) -> None:
     if (
         isinstance(config.identity, bool)
         or not isinstance(config.identity, (int, float))
-        or not 0.75 <= config.identity <= 1.0
+        or not 0.80 <= config.identity <= 1.0
     ):
-        raise ValueError("Clustering identity must be a number between 0.75 and 1.0.")
+        raise ValueError("Clustering identity must be a number between 0.80 and 1.0.")
     if (
         isinstance(config.threads, bool)
         or not isinstance(config.threads, int)

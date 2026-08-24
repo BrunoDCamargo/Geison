@@ -45,7 +45,7 @@ clustering:
 Validation is shared by parsed and directly constructed configurations:
 
 - `enabled` is a boolean;
-- `identity` is a real number from 0.75 through 1.0, excluding booleans;
+- `identity` is a real number from 0.80 through 1.0, excluding booleans;
 - `threads` is an integer from 1 through 256;
 - `memory_mb` is a positive integer;
 - unknown `clustering` fields are rejected.
@@ -60,7 +60,11 @@ compatible value from the official CD-HIT-EST ranges:
 | `0.88 <= c < 0.90` | 7 |
 | `0.85 <= c < 0.88` | 6 |
 | `0.80 <= c < 0.85` | 5 |
-| `0.75 <= c < 0.80` | 4 |
+
+The runner passes `-l <derived - 1>` because CD-HIT-EST retains only records with
+length strictly greater than `-l`. Before invoking the runner, the service rejects
+each approved record shorter than the derived word length with an actionable
+`CdHitError` naming the sequence and required minimum.
 
 ## Clustering boundary
 
@@ -89,7 +93,7 @@ argument list, never through a shell. The initial command is equivalent to:
 
 ```text
 cd-hit-est -i input.fasta -o representatives.fasta
-  -c <identity> -n <derived> -d 0 -g 1 -r 0
+  -c <identity> -n <derived> -l <derived - 1> -d 0 -g 1 -r 0
   -T <threads> -M <memory_mb>
 ```
 
@@ -107,7 +111,7 @@ that both representative FASTA and `.clstr` files exist.
 4. A temporary CD-HIT input FASTA uses stable internal identifiers such as
    `geison-00000000`; an in-memory map preserves original IDs and records.
 5. CD-HIT-EST runs only when clustering is enabled and the Evaluation Set is
-   non-empty.
+   non-empty and every approved sequence is at least the derived word length.
 6. The `.clstr` parser requires every internal ID exactly once, one representative
    per cluster, no unknown IDs, and representatives present in their own clusters.
 7. Final clusters are ordered by the earliest Evaluation Set member. Cluster IDs are
@@ -118,6 +122,10 @@ that both representative FASTA and `.clstr` files exist.
 
 The empty Evaluation Set produces an empty Discovery Set without invoking the
 external binary.
+
+Member lines retain strict full-line parsing while accepting one or more horizontal
+spaces or tabs between the member ordinal and sequence length, matching CD-HIT 4.8.1
+output.
 
 ## Artifacts
 
@@ -150,7 +158,9 @@ schema version 1 and contains:
 When clustering is disabled, the report records the default parameters,
 `DiscoverySet == EvaluationSet`, and an empty cluster list. The QC report gains a
 `discovery_set.sequence_ids` field. Existing summary fields and Evaluation Set
-semantics remain unchanged.
+semantics remain unchanged. A successful disabled rerun removes only a pre-existing
+`clustering/cd-hit-est.clstr` before publishing the new `COMPLETE` report last;
+other files in `clustering/` are preserved.
 
 All final files use temporary siblings plus atomic replacement. Raw temporary input,
 internal-ID representative FASTA, stdout, and stderr are not published. The raw
@@ -167,6 +177,8 @@ original-ID mapping.
   internal IDs, or inconsistent representatives fail before final artifacts are
   published.
 - Invalid configuration fails before output mutation or subprocess execution.
+- An approved sequence shorter than the derived word length fails before runner
+  invocation and before a `COMPLETE` clustering report is published.
 - A clustering failure does not modify the Evaluation Set or produce a `COMPLETE`
   clustering report.
 
@@ -176,10 +188,12 @@ The standard suite remains offline and deterministic:
 
 - configuration tests cover defaults, valid YAML, unknown fields, direct configs,
   bounds, booleans, and word-length boundaries;
-- parser tests use literal realistic `.clstr` text and cover malformed composition;
+- parser tests use literal CD-HIT 4.8.1 tab-separated `.clstr` text and cover
+  malformed composition;
 - service tests use a fake runner that writes real FASTA and `.clstr` files, proving
   representative ordering, original-ID restoration, atomic artifacts, missing-tool
-  diagnostics, and empty/disabled behavior;
+  diagnostics, minimum input length, empty/disabled behavior, and stale raw-artifact
+  cleanup;
 - pipeline tests prove clustering consumes only QC-approved records, the
   `EvaluationSet` is unchanged, the `DiscoverySet` is reduced, mappings are
   persisted, and existing local/NCBI runs remain compatible.
@@ -193,7 +207,8 @@ CD-HIT-EST scientific behavior.
 ## Acceptance mapping
 
 - CD-HIT-EST integration: isolated production subprocess runner.
-- Configurable identity: validated `identity` with automatically compatible `-n`.
+- Configurable identity: validated `identity` with automatically compatible `-n`
+  and `-l`.
 - Discovery representatives: explicit `DiscoverySet` and `discovery_set.fasta`.
 - Original to cluster to representative mapping: `clustering_report.json`.
 - Evaluation Set preserved: immutable pipeline contract and integration tests.

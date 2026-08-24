@@ -14,12 +14,18 @@
 
 - Clustering defaults to disabled; existing runs must not require CD-HIT-EST.
 - Enabled clustering uses only QC-approved records and never mutates, filters, or reorders the Evaluation Set.
-- `identity` is configurable from 0.75 through 1.0; compatible CD-HIT word length is derived, never user-supplied.
-- Production execution uses an argument list with `shell=False`, `-d 0`, `-g 1`, and `-r 0`.
+- `identity` is configurable from 0.80 through 1.0; compatible CD-HIT word length is derived, never user-supplied.
+- Production execution uses an argument list with `shell=False`, derived `-n` and `-l <n - 1>`, `-d 0`, `-g 1`, and `-r 0`.
 - Standard tests remain offline and do not require CD-HIT-EST.
 - The real-tool test lives under `integration_tests/` and skips when `cd-hit-est` is absent.
 - Final artifacts use original sequence IDs and atomic sibling replacement.
 - Duplicate approved sequence IDs and ambiguous/malformed CD-HIT compositions fail explicitly.
+- Strict member-line parsing accepts one or more horizontal spaces or tabs between
+  the ordinal and sequence length, matching CD-HIT 4.8.1 output.
+- Enabled non-empty clustering rejects approved records shorter than the derived
+  word length before runner invocation or `COMPLETE` report publication.
+- A successful disabled rerun removes only a stale
+  `clustering/cd-hit-est.clstr` and writes the new `COMPLETE` report last.
 - No alignment, reverse-complement normalization, checkpoint/resume, or `doctor` behavior is added.
 
 ---
@@ -62,7 +68,7 @@ Add table-driven invalid YAML cases for unknown keys, non-boolean `enabled`, boo
 for clustering in (
     ClusteringConfig(enabled=1),
     ClusteringConfig(identity=True),
-    ClusteringConfig(identity=0.74),
+    ClusteringConfig(identity=0.799),
     ClusteringConfig(identity=1.01),
     ClusteringConfig(threads=0),
     ClusteringConfig(memory_mb=0),
@@ -118,9 +124,9 @@ def validate_clustering_config(config: ClusteringConfig) -> None:
     if (
         isinstance(config.identity, bool)
         or not isinstance(config.identity, (int, float))
-        or not 0.75 <= config.identity <= 1.0
+        or not 0.80 <= config.identity <= 1.0
     ):
-        raise ValueError("Clustering identity must be a number between 0.75 and 1.0.")
+        raise ValueError("Clustering identity must be a number between 0.80 and 1.0.")
     if (
         isinstance(config.threads, bool)
         or not isinstance(config.threads, int)
@@ -183,7 +189,8 @@ self.assertEqual(derive_word_length(0.90), 8)
 self.assertEqual(derive_word_length(0.88), 7)
 self.assertEqual(derive_word_length(0.85), 6)
 self.assertEqual(derive_word_length(0.80), 5)
-self.assertEqual(derive_word_length(0.75), 4)
+with self.assertRaises(ValueError):
+    derive_word_length(0.799)
 ```
 
 Create a fake runner with the same contract as production:
@@ -353,6 +360,7 @@ Patch `shutil.which` and `subprocess.run`. Assert the exact structured argument 
     "-o", str(output_path),
     "-c", "0.95",
     "-n", "10",
+    "-l", "9",
     "-d", "0",
     "-g", "1",
     "-r", "0",
@@ -369,6 +377,8 @@ than absent/false. Cover:
 - success without representative FASTA or `.clstr` raises `CdHitError`;
 - paths containing spaces remain single arguments;
 - default runner is created only for enabled, non-empty clustering.
+- approved records shorter than the derived word length fail before the runner and
+  no `COMPLETE` report is published.
 
 - [ ] **Step 2: Run RED and commit unit tests**
 
@@ -401,7 +411,10 @@ if executable is None:
 
 Invoke `subprocess.run(args, capture_output=True, text=True, check=False)`. On
 nonzero exit, normalize whitespace and retain at most 2,000 stderr characters in the
-error. Verify both output paths are regular files before returning.
+error. Pass `-l` as one less than the derived word length so records equal to the
+word length survive CD-HIT-EST's strict filter. Verify both output paths are regular
+files before returning. Before invocation, reject any approved record shorter than
+the derived word length with a `CdHitError` naming the sequence and minimum.
 
 - [ ] **Step 4: Add the optional real-tool integration test**
 
