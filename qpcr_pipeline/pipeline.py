@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from qpcr_pipeline.alignment import MafftRunner, align_discovery
 from qpcr_pipeline.clustering import CdHitRunner, cluster_sequences
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
 from qpcr_pipeline.local_input import load_genbank, load_local_sequences
@@ -30,6 +31,7 @@ def run_pipeline(
     *,
     ncbi_client: NcbiClient | None = None,
     cdhit_runner: CdHitRunner | None = None,
+    mafft_runner: MafftRunner | None = None,
 ) -> RunSummary:
     selected_input = config.selected_input
     output_dir = Path(outdir)
@@ -77,6 +79,18 @@ def run_pipeline(
         output_dir,
         runner=cdhit_runner,
     )
+    discovery_ids = clustering.discovery_set.sequence_ids
+    discovery_id_set = set(discovery_ids)
+    discovery_records = tuple(
+        record for record in approved_records if record.sequence_id in discovery_id_set
+    )
+    alignment = align_discovery(
+        discovery_records,
+        clustering.discovery_set,
+        config.alignment,
+        output_dir,
+        runner=mafft_runner,
+    )
 
     summary = RunSummary(
         status="COMPLETED",
@@ -97,6 +111,11 @@ def run_pipeline(
         "target_sequence_set": {"sequence_ids": list(result.target_sequence_set.sequence_ids)},
         "evaluation_set": {"sequence_ids": list(approved_ids)},
         "discovery_set": {"sequence_ids": list(clustering.discovery_set.sequence_ids)},
+        "alignment": {
+            "status": alignment.status,
+            "reference_id": alignment.reference_id,
+            "reference_mode": alignment.reference_mode,
+        },
     }
 
     _write_json_atomic(
