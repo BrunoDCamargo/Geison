@@ -95,6 +95,20 @@ class ConservationReportHtmlTests(unittest.TestCase):
         self.assertEqual(data["identity"]["targetName"], marker_text)
         self.assertEqual(data["annotations"][0][4], marker_text)
 
+    def test_template_marker_text_round_trips_when_empty_state_is_visible(self):
+        marker_text = "empty __EMPTY_HIDDEN__ report"
+
+        html = self.render(
+            target_name=marker_text,
+            windows=(),
+            annotations=(ReferenceAnnotation("gene", 1, 25, 1, marker_text),),
+        )
+        data = embedded_data(html)
+
+        self.assertEqual(data["identity"]["targetName"], marker_text)
+        self.assertEqual(data["annotations"][0][4], marker_text)
+        self.assertIn('id="empty-state" role="status" aria-live="polite">', html)
+
     def test_peak_and_trace_drawing_is_clipped_before_axes_are_drawn(self):
         html = self.render(windows=(window(1, 0.95, 0.85, 1.0, 0.2),))
 
