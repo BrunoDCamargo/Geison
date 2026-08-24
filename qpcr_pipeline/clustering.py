@@ -163,10 +163,14 @@ def cluster_sequences(
     evaluation_ids = evaluation_set.sequence_ids
     records_by_id = _validated_records(records, evaluation_ids)
 
-    if not config.enabled or not evaluation_ids:
+    if not config.enabled:
         discovery_ids = evaluation_ids
         clusters: tuple[SequenceCluster, ...] = ()
         raw_cluster_text: str | None = None
+    elif not evaluation_ids:
+        discovery_ids = evaluation_ids
+        clusters = ()
+        raw_cluster_text = ""
     else:
         if runner is None:
             runner = SubprocessCdHitRunner()

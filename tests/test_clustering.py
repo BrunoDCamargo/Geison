@@ -273,17 +273,25 @@ class ClusteringTests(unittest.TestCase):
     def test_empty_enabled_clustering_never_calls_runner(self):
         runner = FailingCdHitRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
             result = cluster_sequences(
                 (),
                 EvaluationSet(()),
                 ClusteringConfig(enabled=True),
-                Path(tmpdir),
+                output_dir,
                 runner=runner,
             )
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+            raw_cluster = result.raw_cluster_path.read_text(encoding="utf-8")
 
         self.assertEqual(result.discovery_set, DiscoverySet(()))
         self.assertEqual(runner.calls, [])
-        self.assertIsNone(result.raw_cluster_path)
+        self.assertEqual(
+            result.raw_cluster_path, output_dir / "clustering" / "cd-hit-est.clstr"
+        )
+        self.assertEqual(raw_cluster, "")
+        self.assertEqual(report["status"], "COMPLETE")
+        self.assertEqual(report["artifacts"]["raw_cluster"], "clustering/cd-hit-est.clstr")
 
     def test_publishes_complete_traceable_artifacts_without_internal_ids(self):
         runner = FakeCdHitRunner(

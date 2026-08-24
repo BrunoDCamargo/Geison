@@ -116,6 +116,62 @@ class MinimalPipelineRunTests(unittest.TestCase):
             ],
         )
 
+    def test_enabled_empty_clustering_publishes_empty_raw_cluster_artifact(self):
+        class FailingCdHitRunner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, input_path, output_path, config):
+                self.calls.append((input_path, output_path, config))
+                raise AssertionError("empty clustering must not call the runner")
+
+        runner = FailingCdHitRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            fasta_path = tmp_path / "target.fasta"
+            outdir = tmp_path / "run"
+            fasta_path.write_text(
+                ">rejected-1\n"
+                "ACGTXCGT\n"
+                ">rejected-2\n"
+                "ACGTXCGC\n",
+                encoding="utf-8",
+            )
+
+            summary = run_pipeline(
+                PipelineConfig(
+                    target_name="synthetic-target",
+                    input_fasta=fasta_path,
+                    clustering=ClusteringConfig(enabled=True),
+                ),
+                outdir,
+                cdhit_runner=runner,
+            )
+            qc_report = json.loads(
+                (outdir / "qc_report.json").read_text(encoding="utf-8")
+            )
+            clustering_report = json.loads(
+                (outdir / "clustering_report.json").read_text(encoding="utf-8")
+            )
+            discovery_fasta = (outdir / "discovery_set.fasta").read_text(
+                encoding="utf-8"
+            )
+            raw_cluster = (outdir / "clustering" / "cd-hit-est.clstr").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(summary.sequence_ids, [])
+        self.assertEqual(qc_report["evaluation_set"]["sequence_ids"], [])
+        self.assertEqual(qc_report["discovery_set"]["sequence_ids"], [])
+        self.assertEqual(discovery_fasta, "")
+        self.assertEqual(raw_cluster, "")
+        self.assertEqual(clustering_report["status"], "COMPLETE")
+        self.assertEqual(
+            clustering_report["artifacts"]["raw_cluster"],
+            "clustering/cd-hit-est.clstr",
+        )
+
     def test_disabled_local_clustering_does_not_call_runner_and_keeps_evaluation_set(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
