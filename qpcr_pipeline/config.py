@@ -29,6 +29,13 @@ class AlignmentConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ConservationConfig:
+    enabled: bool = False
+    window_size: int = 100
+    step_size: int = 10
+
+
+@dataclass(frozen=True, slots=True)
 class NcbiInputConfig:
     query: str | None = None
     accessions: tuple[str, ...] = ()
@@ -47,6 +54,7 @@ class PipelineConfig:
     qc: QCConfig = field(default_factory=QCConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     alignment: AlignmentConfig = field(default_factory=AlignmentConfig)
+    conservation: ConservationConfig = field(default_factory=ConservationConfig)
 
     @property
     def selected_input(
@@ -78,6 +86,8 @@ def load_config(path: str | Path) -> PipelineConfig:
     clustering = _parse_clustering_config(clustering_config)
     alignment_config = raw.get("alignment", {})
     alignment = _parse_alignment_config(alignment_config)
+    conservation_config = raw.get("conservation", {})
+    conservation = _parse_conservation_config(conservation_config)
 
     target_name = _required_string(target, "name", section="target")
     input_fasta = _optional_path(input_config, "fasta")
@@ -96,6 +106,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         ),
         clustering=clustering,
         alignment=alignment,
+        conservation=conservation,
     )
     validate_pipeline_config(config)
     return config
@@ -132,8 +143,13 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Pipeline clustering must be a ClusteringConfig.")
     if not isinstance(config.alignment, AlignmentConfig):
         raise ValueError("Pipeline alignment must be an AlignmentConfig.")
+    if not isinstance(config.conservation, ConservationConfig):
+        raise ValueError("Pipeline conservation must be a ConservationConfig.")
     validate_clustering_config(config.clustering)
     validate_alignment_config(config.alignment)
+    validate_conservation_config(config.conservation)
+    if config.conservation.enabled and not config.alignment.enabled:
+        raise ValueError("Enabled conservation requires enabled alignment.")
     if config.input_ncbi is not None:
         validate_ncbi_input_config(config.input_ncbi)
 
@@ -245,6 +261,27 @@ def validate_alignment_config(config: AlignmentConfig) -> None:
         raise ValueError("Alignment reference_id must be a non-blank string when configured.")
 
 
+def validate_conservation_config(config: ConservationConfig) -> None:
+    if not isinstance(config, ConservationConfig):
+        raise ValueError("Conservation configuration must be a ConservationConfig.")
+    if not isinstance(config.enabled, bool):
+        raise ValueError("Conservation enabled must be a boolean.")
+    for field_name, value in (
+        ("window_size", config.window_size),
+        ("step_size", config.step_size),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= 1_000_000
+        ):
+            raise ValueError(
+                f"Conservation {field_name} must be an integer between 1 and 1000000."
+            )
+    if config.step_size > config.window_size:
+        raise ValueError("Conservation step_size cannot exceed window_size.")
+
+
 def _validate_ncbi_config_integer(
     value: object, field_name: str, *, minimum: int, maximum: int
 ) -> None:
@@ -309,6 +346,25 @@ def _parse_alignment_config(raw: Any) -> AlignmentConfig:
         reference_id=raw.get("reference_id"),
     )
     validate_alignment_config(config)
+    return config
+
+
+def _parse_conservation_config(raw: Any) -> ConservationConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration section 'conservation' must be a mapping.")
+    allowed_fields = {"enabled", "window_size", "step_size"}
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ValueError(
+            f"Configuration section 'conservation' fields {rendered} are unrecognized."
+        )
+    config = ConservationConfig(
+        enabled=raw.get("enabled", False),
+        window_size=raw.get("window_size", 100),
+        step_size=raw.get("step_size", 10),
+    )
+    validate_conservation_config(config)
     return config
 
 
