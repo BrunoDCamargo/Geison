@@ -82,6 +82,12 @@ class ConservationReportHtmlTests(unittest.TestCase):
         self.assertIn('addEventListener("pointerdown"', html)
         self.assertIn("textContent", html)
 
+    def test_report_declares_an_inline_favicon_without_a_network_request(self):
+        html = self.render(windows=(window(1, 0.95, 0.85, 1.0, 0.2),))
+
+        self.assertIn('<link rel="icon" href="data:,">', html)
+        self.assertNotIn('href="/favicon.ico"', html)
+
     def test_template_marker_text_round_trips_without_post_serialization_replacement(self):
         marker_text = "target __EMPTY_HIDDEN__ annotation"
 

@@ -79,6 +79,7 @@ _REPORT_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
 <title>Geison conservation report</title>
 <style>
 :root{color-scheme:light;--ink:#172033;--muted:#596579;--line:#d8deea;--panel:#f5f7fb;--conservation:#1769aa;--coverage:#d65f00;--annotation:#805ad5;--peak:#fff0b3}
