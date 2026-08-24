@@ -2,7 +2,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig, load_config
+from qpcr_pipeline.config import ClusteringConfig, NcbiInputConfig, PipelineConfig, load_config
+
+
+FIXTURE_FASTA = Path("tests/fixtures/target_small.fasta")
 
 
 class PipelineConfigTests(unittest.TestCase):
@@ -293,6 +296,69 @@ class PipelineConfigTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Exactly one local sequence input"):
                 load_config(config_path)
+
+    def test_loads_clustering_configuration_and_defaults_when_omitted(self):
+        config = self._load_yaml(
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+        )
+        self.assertEqual(config.clustering, ClusteringConfig())
+
+        config = self._load_yaml(
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+            "clustering:\n"
+            "  enabled: true\n"
+            "  identity: 0.9\n"
+            "  threads: 4\n"
+            "  memory_mb: 2048\n"
+        )
+        self.assertEqual(
+            config.clustering,
+            ClusteringConfig(enabled=True, identity=0.9, threads=4, memory_mb=2048),
+        )
+
+    def test_rejects_invalid_clustering_yaml_configuration(self):
+        invalid_cases = (
+            ("unknown key", "  extra: true\n", "clustering.*unrecognized"),
+            ("enabled", "  enabled: 1\n", "enabled.*boolean"),
+            ("identity bool", "  identity: true\n", "identity.*number"),
+            ("identity string", "  identity: nope\n", "identity.*number"),
+            ("identity low", "  identity: 0.74\n", "identity.*0.75.*1.0"),
+            ("identity high", "  identity: 1.01\n", "identity.*0.75.*1.0"),
+            ("threads bool", "  threads: true\n", "threads.*integer"),
+            ("threads fractional", "  threads: 1.5\n", "threads.*integer"),
+            ("threads low", "  threads: 0\n", "threads.*1.*256"),
+            ("threads high", "  threads: 257\n", "threads.*1.*256"),
+            ("memory bool", "  memory_mb: true\n", "memory_mb.*positive integer"),
+            ("memory fractional", "  memory_mb: 1.5\n", "memory_mb.*positive integer"),
+            ("memory non-positive", "  memory_mb: 0\n", "memory_mb.*positive integer"),
+        )
+        for name, clustering_yaml, message in invalid_cases:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                self._load_yaml(
+                    "target:\n  name: target\n"
+                    f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+                    "clustering:\n" + clustering_yaml
+                )
+
+    def test_selected_input_rejects_invalid_direct_clustering_configuration(self):
+        for clustering in (
+            ClusteringConfig(enabled=1),
+            ClusteringConfig(identity=True),
+            ClusteringConfig(identity=0.74),
+            ClusteringConfig(identity=1.01),
+            ClusteringConfig(threads=0),
+            ClusteringConfig(memory_mb=0),
+        ):
+            with self.subTest(clustering=clustering):
+                config = PipelineConfig(
+                    target_name="target",
+                    input_fasta=FIXTURE_FASTA,
+                    clustering=clustering,
+                )
+                with self.assertRaises(ValueError):
+                    _ = config.selected_input
 
 
 if __name__ == "__main__":
