@@ -22,6 +22,13 @@ class ClusteringConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AlignmentConfig:
+    enabled: bool = False
+    threads: int = 1
+    reference_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NcbiInputConfig:
     query: str | None = None
     accessions: tuple[str, ...] = ()
@@ -39,6 +46,7 @@ class PipelineConfig:
     input_ncbi: NcbiInputConfig | None = None
     qc: QCConfig = field(default_factory=QCConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
+    alignment: AlignmentConfig = field(default_factory=AlignmentConfig)
 
     @property
     def selected_input(
@@ -68,6 +76,8 @@ def load_config(path: str | Path) -> PipelineConfig:
         raise ValueError("Configuration section 'qc' must be a mapping.")
     clustering_config = raw.get("clustering", {})
     clustering = _parse_clustering_config(clustering_config)
+    alignment_config = raw.get("alignment", {})
+    alignment = _parse_alignment_config(alignment_config)
 
     target_name = _required_string(target, "name", section="target")
     input_fasta = _optional_path(input_config, "fasta")
@@ -85,6 +95,7 @@ def load_config(path: str | Path) -> PipelineConfig:
             length_tolerance_fraction=_optional_number(qc_config, "length_tolerance_fraction"),
         ),
         clustering=clustering,
+        alignment=alignment,
     )
     validate_pipeline_config(config)
     return config
@@ -119,7 +130,10 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Pipeline qc must be a QCConfig.")
     if not isinstance(config.clustering, ClusteringConfig):
         raise ValueError("Pipeline clustering must be a ClusteringConfig.")
+    if not isinstance(config.alignment, AlignmentConfig):
+        raise ValueError("Pipeline alignment must be an AlignmentConfig.")
     validate_clustering_config(config.clustering)
+    validate_alignment_config(config.alignment)
     if config.input_ncbi is not None:
         validate_ncbi_input_config(config.input_ncbi)
 
@@ -214,6 +228,23 @@ def validate_clustering_config(config: ClusteringConfig) -> None:
         raise ValueError("Clustering memory_mb must be a positive integer.")
 
 
+def validate_alignment_config(config: AlignmentConfig) -> None:
+    if not isinstance(config, AlignmentConfig):
+        raise ValueError("Alignment configuration must be an AlignmentConfig.")
+    if not isinstance(config.enabled, bool):
+        raise ValueError("Alignment enabled must be a boolean.")
+    if (
+        isinstance(config.threads, bool)
+        or not isinstance(config.threads, int)
+        or not 1 <= config.threads <= 256
+    ):
+        raise ValueError("Alignment threads must be an integer between 1 and 256.")
+    if config.reference_id is not None and (
+        not isinstance(config.reference_id, str) or not config.reference_id.strip()
+    ):
+        raise ValueError("Alignment reference_id must be a non-blank string when configured.")
+
+
 def _validate_ncbi_config_integer(
     value: object, field_name: str, *, minimum: int, maximum: int
 ) -> None:
@@ -259,6 +290,25 @@ def _parse_clustering_config(raw: Any) -> ClusteringConfig:
         memory_mb=raw.get("memory_mb", 800),
     )
     validate_clustering_config(config)
+    return config
+
+
+def _parse_alignment_config(raw: Any) -> AlignmentConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration section 'alignment' must be a mapping.")
+    allowed_fields = {"enabled", "threads", "reference_id"}
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ValueError(
+            f"Configuration section 'alignment' fields {rendered} are unrecognized."
+        )
+    config = AlignmentConfig(
+        enabled=raw.get("enabled", False),
+        threads=raw.get("threads", 1),
+        reference_id=raw.get("reference_id"),
+    )
+    validate_alignment_config(config)
     return config
 
 
