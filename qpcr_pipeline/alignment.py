@@ -1,13 +1,10 @@
-"""Deterministic, traceable alignment of a Discovery Set.
-
-The production MAFFT runner is deliberately supplied in the following task.  This
-module keeps the deterministic service independently testable through an injected
-``MafftRunner``.
-"""
+"""Deterministic, traceable alignment of a Discovery Set."""
 
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -37,6 +34,50 @@ class MafftRunner(Protocol):
         output_path: Path,
         config: AlignmentConfig,
     ) -> None: ...
+
+
+class SubprocessMafftRunner:
+    """Execute MAFFT using the fixed, non-shell alignment command."""
+
+    def __init__(self, executable: str = "mafft"):
+        self.executable = executable
+
+    def run(
+        self,
+        input_path: Path,
+        output_path: Path,
+        config: AlignmentConfig,
+    ) -> None:
+        executable = shutil.which(self.executable)
+        if executable is None:
+            raise MafftError(
+                f"{self.executable!r} was not found on PATH; install MAFFT or disable alignment."
+            )
+        completed = subprocess.run(
+            [
+                executable,
+                "--auto",
+                "--nuc",
+                "--inputorder",
+                "--adjustdirectionaccurately",
+                "--thread",
+                str(config.threads),
+                "--threadit",
+                "0",
+                "--quiet",
+                str(input_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = " ".join(completed.stderr.split())[:2_000]
+            raise MafftError(f"MAFFT exited with status {completed.returncode}: {stderr}")
+        if not completed.stdout.strip():
+            raise MafftError("MAFFT produced empty alignment output.")
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(completed.stdout)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,9 +122,8 @@ def align_discovery(
 ) -> AlignmentResult:
     """Align unchanged Discovery records and publish auditable artifacts.
 
-    Inputs are validated before any output is altered.  For this task, a runner is
-    required for enabled Discovery Sets containing two or more records; the
-    subprocess runner is intentionally added later.
+    Inputs are validated before any output is altered.  A subprocess runner is
+    constructed only when enabled alignment needs it and none was injected.
     """
     validate_alignment_config(config)
     output_dir = Path(output_dir)
@@ -128,11 +168,7 @@ def align_discovery(
             sequences = (AlignedSequence(reference_id, only_record.sequence, "forward"),)
         else:
             if runner is None:
-                raise MafftError(
-                    "An injected MAFFT runner is required for enabled alignment with "
-                    "two or more Discovery records in this task; inject a runner "
-                    "until Task 3 supplies the production runner."
-                )
+                runner = SubprocessMafftRunner()
             sequences = _run_and_parse(records_by_id, discovery_set, reference_id, config, runner)
         reference_sequence = next(
             sequence.aligned_sequence
