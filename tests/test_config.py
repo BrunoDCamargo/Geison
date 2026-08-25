@@ -7,8 +7,11 @@ from qpcr_pipeline.config import (
     ClusteringConfig,
     ConservationConfig,
     NcbiInputConfig,
+    OligoConstraints,
     PipelineConfig,
+    PrimerDesignConfig,
     load_config,
+    validate_primer_design_config,
 )
 
 
@@ -363,6 +366,85 @@ class PipelineConfigTests(unittest.TestCase):
             ConservationConfig(enabled=True, window_size=120, step_size=12),
         )
         self.assertEqual(self._load_yaml(minimal_yaml).conservation, ConservationConfig())
+
+    def test_loads_primer_design_configuration_and_defaults_when_omitted(self):
+        minimal_yaml = (
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+            "alignment:\n  enabled: true\n"
+            "conservation:\n  enabled: true\n"
+        )
+        config = self._load_yaml(minimal_yaml)
+
+        self.assertEqual(config.primer_design.max_candidate_regions, 10)
+        self.assertEqual(config.primer_design.primer.opt_tm, 60.0)
+        self.assertEqual(config.primer_design.probe.opt_tm, 70.0)
+
+        loaded = self._load_yaml(
+            minimal_yaml
+            + "primer_design:\n"
+            "  enabled: true\n"
+            "  max_candidate_regions: 3\n"
+            "  assays_per_region: 4\n"
+            "  candidate_region_length: 220\n"
+            "  product_size_max: 180\n"
+            "  primer:\n"
+            "    opt_tm: 59.5\n"
+            "  probe:\n"
+            "    min_size: 20\n"
+        )
+
+        self.assertTrue(loaded.primer_design.enabled)
+        self.assertEqual(loaded.primer_design.max_candidate_regions, 3)
+        self.assertEqual(loaded.primer_design.primer.opt_tm, 59.5)
+        self.assertEqual(loaded.primer_design.probe.min_size, 20)
+
+    def test_rejects_invalid_primer_design_yaml_configuration(self):
+        invalid_cases = (
+            ("non-mapping", "primer_design: true\n", "primer_design.*mapping"),
+            ("unknown key", "primer_design:\n  extra: true\n", "primer_design.*extra.*unrecognized"),
+            ("enabled integer", "primer_design:\n  enabled: 1\n", "enabled.*boolean"),
+            ("candidate count bool", "primer_design:\n  max_candidate_regions: true\n", "max_candidate_regions.*positive integer"),
+            ("candidate count zero", "primer_design:\n  max_candidate_regions: 0\n", "max_candidate_regions.*positive integer"),
+            ("fraction non-finite", "primer_design:\n  min_mean_conservation: .nan\n", "min_mean_conservation.*finite.*0.*1"),
+            ("fraction high", "primer_design:\n  min_usable_fraction: 1.01\n", "min_usable_fraction.*0.*1"),
+            ("unknown primer field", "primer_design:\n  primer:\n    extra: 1\n", "primer.*extra.*unrecognized"),
+            ("primer size bool", "primer_design:\n  primer:\n    min_size: true\n", "primer.*min_size.*positive integer"),
+            ("primer unordered sizes", "primer_design:\n  primer:\n    min_size: 21\n    opt_size: 20\n", "primer.*size"),
+            ("probe non-finite tm", "primer_design:\n  probe:\n    opt_tm: .inf\n", "probe.*opt_tm.*finite"),
+            ("probe unordered tm", "primer_design:\n  probe:\n    min_tm: 71\n    opt_tm: 70\n", "probe.*Tm"),
+            ("primer gc low", "primer_design:\n  primer:\n    min_gc_percent: -0.1\n", "primer.*min_gc_percent.*0.*100"),
+            ("product range", "primer_design:\n  product_size_min: 201\n", "product_size_min"),
+            ("candidate region short", "primer_design:\n  candidate_region_length: 150\n  product_size_max: 200\n", "candidate_region_length"),
+            ("enabled without conservation", "primer_design:\n  enabled: true\n", "requires enabled conservation"),
+        )
+        base_yaml = (
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+            "alignment:\n  enabled: true\n"
+            "conservation:\n  enabled: true\n"
+        )
+        for name, primer_design_yaml, message in invalid_cases:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                yaml = base_yaml
+                if name == "enabled without conservation":
+                    yaml = base_yaml.replace("conservation:\n  enabled: true\n", "")
+                self._load_yaml(yaml + primer_design_yaml)
+
+    def test_rejects_invalid_direct_primer_design_configuration(self):
+        invalid = (
+            PrimerDesignConfig(max_candidate_regions=True),
+            PrimerDesignConfig(max_region_overlap_fraction=float("nan")),
+            PrimerDesignConfig(primer=OligoConstraints(21, 20, 25, 58.0, 60.0, 62.0, 40.0, 60.0)),
+            PrimerDesignConfig(probe=OligoConstraints(18, 25, 30, 71.0, 70.0, 72.0, 30.0, 80.0)),
+            PrimerDesignConfig(candidate_region_length=150, product_size_max=200),
+        )
+        for primer_design in invalid:
+            with self.subTest(primer_design=primer_design), self.assertRaises(ValueError):
+                validate_primer_design_config(primer_design)
+
+    def test_accepts_two_bit_primer_design_entropy_limit(self):
+        validate_primer_design_config(PrimerDesignConfig(max_mean_entropy_bits=2.0))
 
     def test_rejects_invalid_conservation_yaml_configuration(self):
         invalid_cases = (

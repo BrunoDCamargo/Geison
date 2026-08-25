@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -36,6 +37,45 @@ class ConservationConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OligoConstraints:
+    min_size: int
+    opt_size: int
+    max_size: int
+    min_tm: float
+    opt_tm: float
+    max_tm: float
+    min_gc_percent: float
+    max_gc_percent: float
+
+
+def _primer_defaults() -> OligoConstraints:
+    return OligoConstraints(18, 20, 25, 58.0, 60.0, 62.0, 40.0, 60.0)
+
+
+def _probe_defaults() -> OligoConstraints:
+    return OligoConstraints(18, 25, 30, 68.0, 70.0, 72.0, 30.0, 80.0)
+
+
+@dataclass(frozen=True, slots=True)
+class PrimerDesignConfig:
+    enabled: bool = False
+    max_candidate_regions: int = 10
+    assays_per_region: int = 5
+    candidate_region_length: int = 300
+    max_region_overlap_fraction: float = 0.5
+    min_mean_conservation: float = 0.90
+    min_minimum_conservation: float = 0.70
+    min_mean_coverage: float = 0.90
+    max_mean_gap_frequency: float = 0.05
+    max_mean_entropy_bits: float = 0.50
+    min_usable_fraction: float = 0.80
+    product_size_min: int = 70
+    product_size_max: int = 200
+    primer: OligoConstraints = field(default_factory=_primer_defaults)
+    probe: OligoConstraints = field(default_factory=_probe_defaults)
+
+
+@dataclass(frozen=True, slots=True)
 class NcbiInputConfig:
     query: str | None = None
     accessions: tuple[str, ...] = ()
@@ -55,6 +95,7 @@ class PipelineConfig:
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     alignment: AlignmentConfig = field(default_factory=AlignmentConfig)
     conservation: ConservationConfig = field(default_factory=ConservationConfig)
+    primer_design: PrimerDesignConfig = field(default_factory=PrimerDesignConfig)
 
     @property
     def selected_input(
@@ -88,6 +129,8 @@ def load_config(path: str | Path) -> PipelineConfig:
     alignment = _parse_alignment_config(alignment_config)
     conservation_config = raw.get("conservation", {})
     conservation = _parse_conservation_config(conservation_config)
+    primer_design_config = raw.get("primer_design", {})
+    primer_design = _parse_primer_design_config(primer_design_config)
 
     target_name = _required_string(target, "name", section="target")
     input_fasta = _optional_path(input_config, "fasta")
@@ -107,6 +150,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         clustering=clustering,
         alignment=alignment,
         conservation=conservation,
+        primer_design=primer_design,
     )
     validate_pipeline_config(config)
     return config
@@ -145,11 +189,16 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Pipeline alignment must be an AlignmentConfig.")
     if not isinstance(config.conservation, ConservationConfig):
         raise ValueError("Pipeline conservation must be a ConservationConfig.")
+    if not isinstance(config.primer_design, PrimerDesignConfig):
+        raise ValueError("Pipeline primer_design must be a PrimerDesignConfig.")
     validate_clustering_config(config.clustering)
     validate_alignment_config(config.alignment)
     validate_conservation_config(config.conservation)
+    validate_primer_design_config(config.primer_design)
     if config.conservation.enabled and not config.alignment.enabled:
         raise ValueError("Enabled conservation requires enabled alignment.")
+    if config.primer_design.enabled and not config.conservation.enabled:
+        raise ValueError("Enabled primer design requires enabled conservation.")
     if config.input_ncbi is not None:
         validate_ncbi_input_config(config.input_ncbi)
 
@@ -282,6 +331,124 @@ def validate_conservation_config(config: ConservationConfig) -> None:
         raise ValueError("Conservation step_size cannot exceed window_size.")
 
 
+def validate_primer_design_config(config: PrimerDesignConfig) -> None:
+    if not isinstance(config, PrimerDesignConfig):
+        raise ValueError("Primer design configuration must be a PrimerDesignConfig.")
+    if not isinstance(config.enabled, bool):
+        raise ValueError("Primer design enabled must be a boolean.")
+
+    for field_name, value in (
+        ("max_candidate_regions", config.max_candidate_regions),
+        ("assays_per_region", config.assays_per_region),
+        ("candidate_region_length", config.candidate_region_length),
+        ("product_size_min", config.product_size_min),
+        ("product_size_max", config.product_size_max),
+    ):
+        _validate_primer_design_positive_integer(value, field_name)
+
+    for field_name, value in (
+        ("max_region_overlap_fraction", config.max_region_overlap_fraction),
+        ("min_mean_conservation", config.min_mean_conservation),
+        ("min_minimum_conservation", config.min_minimum_conservation),
+        ("min_mean_coverage", config.min_mean_coverage),
+        ("max_mean_gap_frequency", config.max_mean_gap_frequency),
+        ("min_usable_fraction", config.min_usable_fraction),
+    ):
+        _validate_primer_design_fraction(value, field_name)
+    _validate_primer_design_entropy_bits(config.max_mean_entropy_bits)
+
+    _validate_oligo_constraints(config.primer, "primer")
+    _validate_oligo_constraints(config.probe, "probe")
+    if config.product_size_min > config.product_size_max:
+        raise ValueError(
+            "Primer design product_size_min cannot exceed product_size_max."
+        )
+    if config.candidate_region_length < config.product_size_max:
+        raise ValueError(
+            "Primer design candidate_region_length must be at least product_size_max."
+        )
+
+
+def _validate_oligo_constraints(config: OligoConstraints, name: str) -> None:
+    if not isinstance(config, OligoConstraints):
+        raise ValueError(f"Primer design {name} must be an OligoConstraints.")
+    for field_name, value in (
+        ("min_size", config.min_size),
+        ("opt_size", config.opt_size),
+        ("max_size", config.max_size),
+    ):
+        _validate_primer_design_positive_integer(value, f"{name}.{field_name}")
+    for field_name, value in (
+        ("min_tm", config.min_tm),
+        ("opt_tm", config.opt_tm),
+        ("max_tm", config.max_tm),
+    ):
+        _validate_primer_design_finite_number(value, f"{name}.{field_name}")
+    for field_name, value in (
+        ("min_gc_percent", config.min_gc_percent),
+        ("max_gc_percent", config.max_gc_percent),
+    ):
+        _validate_primer_design_gc_percent(value, f"{name}.{field_name}")
+    if not config.min_size <= config.opt_size <= config.max_size:
+        raise ValueError(f"Primer design {name} size values must be ordered.")
+    if not config.min_tm <= config.opt_tm <= config.max_tm:
+        raise ValueError(f"Primer design {name} Tm values must be ordered.")
+    if config.min_gc_percent > config.max_gc_percent:
+        raise ValueError(f"Primer design {name} GC percentages must be ordered.")
+
+
+def _validate_primer_design_positive_integer(value: object, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"Primer design {field_name} must be a positive integer."
+        )
+
+
+def _validate_primer_design_finite_number(value: object, field_name: str) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+    ):
+        raise ValueError(f"Primer design {field_name} must be a finite number.")
+
+
+def _validate_primer_design_fraction(value: object, field_name: str) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not 0.0 <= value <= 1.0
+    ):
+        raise ValueError(
+            f"Primer design {field_name} must be a finite number between 0 and 1."
+        )
+
+
+def _validate_primer_design_gc_percent(value: object, field_name: str) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not 0.0 <= value <= 100.0
+    ):
+        raise ValueError(
+            f"Primer design {field_name} must be a finite number between 0 and 100."
+        )
+
+
+def _validate_primer_design_entropy_bits(value: object) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not 0.0 <= value <= 2.0
+    ):
+        raise ValueError(
+            "Primer design max_mean_entropy_bits must be a finite number between 0 and 2."
+        )
+
+
 def _validate_ncbi_config_integer(
     value: object, field_name: str, *, minimum: int, maximum: int
 ) -> None:
@@ -366,6 +533,108 @@ def _parse_conservation_config(raw: Any) -> ConservationConfig:
     )
     validate_conservation_config(config)
     return config
+
+
+def _parse_primer_design_config(raw: Any) -> PrimerDesignConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration section 'primer_design' must be a mapping.")
+    allowed_fields = {
+        "enabled",
+        "max_candidate_regions",
+        "assays_per_region",
+        "candidate_region_length",
+        "max_region_overlap_fraction",
+        "min_mean_conservation",
+        "min_minimum_conservation",
+        "min_mean_coverage",
+        "max_mean_gap_frequency",
+        "max_mean_entropy_bits",
+        "min_usable_fraction",
+        "product_size_min",
+        "product_size_max",
+        "primer",
+        "probe",
+    }
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ValueError(
+            "Configuration section 'primer_design' fields "
+            f"{rendered} are unrecognized."
+        )
+
+    defaults = PrimerDesignConfig()
+    config = PrimerDesignConfig(
+        enabled=raw.get("enabled", defaults.enabled),
+        max_candidate_regions=raw.get(
+            "max_candidate_regions", defaults.max_candidate_regions
+        ),
+        assays_per_region=raw.get("assays_per_region", defaults.assays_per_region),
+        candidate_region_length=raw.get(
+            "candidate_region_length", defaults.candidate_region_length
+        ),
+        max_region_overlap_fraction=raw.get(
+            "max_region_overlap_fraction", defaults.max_region_overlap_fraction
+        ),
+        min_mean_conservation=raw.get(
+            "min_mean_conservation", defaults.min_mean_conservation
+        ),
+        min_minimum_conservation=raw.get(
+            "min_minimum_conservation", defaults.min_minimum_conservation
+        ),
+        min_mean_coverage=raw.get("min_mean_coverage", defaults.min_mean_coverage),
+        max_mean_gap_frequency=raw.get(
+            "max_mean_gap_frequency", defaults.max_mean_gap_frequency
+        ),
+        max_mean_entropy_bits=raw.get(
+            "max_mean_entropy_bits", defaults.max_mean_entropy_bits
+        ),
+        min_usable_fraction=raw.get(
+            "min_usable_fraction", defaults.min_usable_fraction
+        ),
+        product_size_min=raw.get("product_size_min", defaults.product_size_min),
+        product_size_max=raw.get("product_size_max", defaults.product_size_max),
+        primer=_parse_oligo_constraints(raw.get("primer", {}), defaults.primer, "primer"),
+        probe=_parse_oligo_constraints(raw.get("probe", {}), defaults.probe, "probe"),
+    )
+    validate_primer_design_config(config)
+    return config
+
+
+def _parse_oligo_constraints(
+    raw: Any, defaults: OligoConstraints, name: str
+) -> OligoConstraints:
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"Configuration section 'primer_design.{name}' must be a mapping."
+        )
+    allowed_fields = {
+        "min_size",
+        "opt_size",
+        "max_size",
+        "min_tm",
+        "opt_tm",
+        "max_tm",
+        "min_gc_percent",
+        "max_gc_percent",
+    }
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ValueError(
+            f"Configuration section 'primer_design.{name}' fields "
+            f"{rendered} are unrecognized."
+        )
+    return OligoConstraints(
+        min_size=raw.get("min_size", defaults.min_size),
+        opt_size=raw.get("opt_size", defaults.opt_size),
+        max_size=raw.get("max_size", defaults.max_size),
+        min_tm=raw.get("min_tm", defaults.min_tm),
+        opt_tm=raw.get("opt_tm", defaults.opt_tm),
+        max_tm=raw.get("max_tm", defaults.max_tm),
+        min_gc_percent=raw.get("min_gc_percent", defaults.min_gc_percent),
+        max_gc_percent=raw.get("max_gc_percent", defaults.max_gc_percent),
+    )
 
 
 def _optional_path(raw: dict[str, Any], key: str) -> Path | None:
