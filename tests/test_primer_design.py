@@ -1,6 +1,10 @@
+import json
+import os
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from qpcr_pipeline.config import PrimerDesignConfig
 from qpcr_pipeline.conservation import (
@@ -8,7 +12,11 @@ from qpcr_pipeline.conservation import (
     PositionConservation,
     WindowConservation,
 )
-from qpcr_pipeline.primer_design import PrimerDesignError, _select_candidate_regions
+from qpcr_pipeline.primer_design import (
+    PrimerDesignError,
+    _select_candidate_regions,
+    design_primers,
+)
 
 
 def _position(reference_position: int) -> PositionConservation:
@@ -107,6 +115,97 @@ def _permissive_config(**changes: float | int) -> PrimerDesignConfig:
         ),
         **changes,
     )
+
+
+_CANDIDATE_HEADER = (
+    "region_id\trank\treference_start\treference_end\tpeak_start\tpeak_end\t"
+    "position_count\tusable_length\tusable_fraction\tmean_conservation\t"
+    "minimum_conservation\tmean_coverage\tmean_gap_frequency\tmean_entropy_bits\n"
+)
+_ASSAY_HEADER = (
+    "assay_id\tregion_id\tprimer3_index\tforward_sequence\t"
+    "forward_reference_start\tforward_reference_end\tforward_length\tforward_tm\t"
+    "forward_gc_percent\tforward_penalty\tprobe_sequence\tprobe_reference_start\t"
+    "probe_reference_end\tprobe_length\tprobe_tm\tprobe_gc_percent\tprobe_penalty\t"
+    "reverse_sequence\treverse_reference_start\treverse_reference_end\treverse_length\t"
+    "reverse_tm\treverse_gc_percent\treverse_penalty\tproduct_size\tpair_penalty\n"
+)
+_COMPLETE_PRIMER3_OUTPUT = (
+    "SEQUENCE_ID=region-001\n"
+    "PRIMER_WARNING=fixture warning\n"
+    "PRIMER_LEFT_EXPLAIN=considered 1, ok 1\n"
+    "PRIMER_INTERNAL_EXPLAIN=considered 1, ok 1\n"
+    "PRIMER_RIGHT_EXPLAIN=considered 1, ok 1\n"
+    "PRIMER_PAIR_EXPLAIN=considered 1, ok 1\n"
+    "PRIMER_LEFT_NUM_RETURNED=1\n"
+    "PRIMER_INTERNAL_NUM_RETURNED=1\n"
+    "PRIMER_RIGHT_NUM_RETURNED=1\n"
+    "PRIMER_PAIR_NUM_RETURNED=1\n"
+    "PRIMER_LEFT_0=10,20\n"
+    "PRIMER_LEFT_0_SEQUENCE=AAAAAAAAAAAAAAAAAAAA\n"
+    "PRIMER_LEFT_0_TM=60.25\n"
+    "PRIMER_LEFT_0_GC_PERCENT=42.5\n"
+    "PRIMER_LEFT_0_PENALTY=0.5\n"
+    "PRIMER_LEFT_0_SELF_ANY_TH=1.2\n"
+    "PRIMER_INTERNAL_0=40,20\n"
+    "PRIMER_INTERNAL_0_SEQUENCE=CCCCCCCCCCCCCCCCCCCC\n"
+    "PRIMER_INTERNAL_0_TM=70.5\n"
+    "PRIMER_INTERNAL_0_GC_PERCENT=55.0\n"
+    "PRIMER_INTERNAL_0_PENALTY=0.25\n"
+    "PRIMER_INTERNAL_0_HAIRPIN_TH=0.75\n"
+    "PRIMER_RIGHT_0=109,20\n"
+    "PRIMER_RIGHT_0_SEQUENCE=GGGGGGGGGGGGGGGGGGGG\n"
+    "PRIMER_RIGHT_0_TM=61.0\n"
+    "PRIMER_RIGHT_0_GC_PERCENT=47.5\n"
+    "PRIMER_RIGHT_0_PENALTY=0.75\n"
+    "PRIMER_RIGHT_0_SELF_END_TH=0.8\n"
+    "PRIMER_PAIR_0_PRODUCT_SIZE=100\n"
+    "PRIMER_PAIR_0_PENALTY=1.5\n"
+    "PRIMER_PAIR_0_COMPL_ANY_TH=2.75\n"
+    "=\n"
+)
+_ZERO_PAIR_PRIMER3_OUTPUT = (
+    "SEQUENCE_ID=region-001\n"
+    "PRIMER_WARNING=no viable pair\n"
+    "PRIMER_LEFT_EXPLAIN=considered 1, low tm 1\n"
+    "PRIMER_INTERNAL_EXPLAIN=considered 1, high tm 1\n"
+    "PRIMER_RIGHT_EXPLAIN=considered 1, high tm 1\n"
+    "PRIMER_PAIR_EXPLAIN=considered 0\n"
+    "PRIMER_LEFT_NUM_RETURNED=0\n"
+    "PRIMER_INTERNAL_NUM_RETURNED=0\n"
+    "PRIMER_RIGHT_NUM_RETURNED=0\n"
+    "PRIMER_PAIR_NUM_RETURNED=0\n"
+    "=\n"
+)
+_PARSER_ERROR_OUTPUT = (
+    "SEQUENCE_ID=region-001\n"
+    "PRIMER_ERROR=literal parser failure\n"
+    "=\n"
+)
+
+
+class _LiteralPrimer3Runner:
+    def __init__(self, response: str):
+        self.response = response
+        self.inputs: list[str] = []
+
+    def run(self, input_text: str) -> str:
+        self.inputs.append(input_text)
+        return self.response
+
+
+class _RaisingPrimer3Runner:
+    def __init__(self, error: Exception):
+        self.error = error
+
+    def run(self, input_text: str) -> str:
+        del input_text
+        raise self.error
+
+
+class _UnreadableConservation:
+    def __getattribute__(self, name: str):
+        raise AssertionError(f"disabled design read conservation attribute {name!r}")
 
 
 class CandidateRegionSelectionTests(unittest.TestCase):
@@ -437,3 +536,482 @@ class CandidateRegionSelectionTests(unittest.TestCase):
                 PrimerDesignError, message
             ):
                 _select_candidate_regions(conservation, _permissive_config())
+
+
+class PrimerDesignServiceTests(unittest.TestCase):
+    def test_enabled_design_publishes_typed_auditable_artifacts(self):
+        conservation = _conservation(
+            _positions(1, 300),
+            (WindowConservation(1, 300, 300, 1.0, 1.0, 1.0, 0.0, 0.0),),
+        )
+        config = _permissive_config(enabled=True, candidate_region_length=300)
+        runner = _LiteralPrimer3Runner(_COMPLETE_PRIMER3_OUTPUT)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+
+            result = design_primers(
+                conservation, config, output_dir, runner=runner
+            )
+
+            artifact_dir = output_dir / "primer_design"
+            expected_paths = {
+                "candidate_regions": artifact_dir / "candidate_regions.tsv",
+                "assays": artifact_dir / "assays.tsv",
+                "primer3_input": artifact_dir / "primer3_input.txt",
+                "primer3_output": artifact_dir / "primer3_output.txt",
+                "report": artifact_dir / "primer_design_report.json",
+            }
+            self.assertEqual(result.status, "COMPLETE")
+            self.assertEqual(result.reference_id, "ref")
+            self.assertEqual(len(result.candidates), 1)
+            self.assertEqual(len(result.assays), 1)
+            self.assertEqual(result.candidate_regions_path, expected_paths["candidate_regions"])
+            self.assertEqual(result.assays_path, expected_paths["assays"])
+            self.assertEqual(result.primer3_input_path, expected_paths["primer3_input"])
+            self.assertEqual(result.primer3_output_path, expected_paths["primer3_output"])
+            self.assertEqual(result.report_path, expected_paths["report"])
+
+            candidate_text = expected_paths["candidate_regions"].read_text(encoding="utf-8")
+            assay_text = expected_paths["assays"].read_text(encoding="utf-8")
+            self.assertEqual(
+                candidate_text,
+                _CANDIDATE_HEADER
+                + "region-001\t1\t1\t300\t1\t300\t300\t300\t1.0\t1.0\t1.0\t1.0\t0.0\t0.0\n",
+            )
+            self.assertEqual(
+                assay_text,
+                _ASSAY_HEADER
+                + "region-001-assay-001\tregion-001\t0\tAAAAAAAAAAAAAAAAAAAA\t"
+                "11\t30\t20\t60.25\t42.5\t0.5\tCCCCCCCCCCCCCCCCCCCC\t"
+                "41\t60\t20\t70.5\t55.0\t0.25\tGGGGGGGGGGGGGGGGGGGG\t"
+                "91\t110\t20\t61.0\t47.5\t0.75\t100\t1.5\n",
+            )
+            self.assertEqual(
+                expected_paths["primer3_input"].read_text(encoding="utf-8"),
+                runner.inputs[0],
+            )
+            self.assertEqual(
+                expected_paths["primer3_output"].read_text(encoding="utf-8"),
+                _COMPLETE_PRIMER3_OUTPUT,
+            )
+
+            report_text = expected_paths["report"].read_text(encoding="utf-8")
+            report = json.loads(report_text)
+            self.assertEqual(report["schema_version"], 1)
+            self.assertEqual(report["status"], "COMPLETE")
+            self.assertIs(report["enabled"], True)
+            self.assertEqual(report["reference_id"], "ref")
+            self.assertEqual(report["counts"], {"candidates": 1, "assays": 1})
+            self.assertIsInstance(report["configuration"]["assays_per_region"], int)
+            self.assertIsInstance(report["configuration"]["min_mean_conservation"], float)
+            self.assertEqual(report["configuration"]["min_mean_conservation"], 0.0)
+            self.assertEqual(report["configuration"]["max_mean_entropy_bits"], 2.0)
+            self.assertEqual(
+                report["candidates"],
+                [
+                    {
+                        "region_id": "region-001",
+                        "rank": 1,
+                        "reference_start": 1,
+                        "reference_end": 300,
+                        "peak_start": 1,
+                        "peak_end": 300,
+                        "position_count": 300,
+                        "usable_length": 300,
+                        "usable_fraction": 1.0,
+                        "mean_conservation": 1.0,
+                        "minimum_conservation": 1.0,
+                        "mean_coverage": 1.0,
+                        "mean_gap_frequency": 0.0,
+                        "mean_entropy_bits": 0.0,
+                    }
+                ],
+            )
+            self.assertIsInstance(report["candidates"][0]["rank"], int)
+            self.assertIsInstance(report["candidates"][0]["mean_conservation"], float)
+            assay = report["assays"][0]
+            self.assertIsInstance(assay["primer3_index"], int)
+            self.assertIsInstance(assay["product_size"], int)
+            self.assertIsInstance(assay["pair_penalty"], float)
+            self.assertEqual(
+                assay,
+                {
+                    "assay_id": "region-001-assay-001",
+                    "region_id": "region-001",
+                    "primer3_index": 0,
+                    "forward_primer": {
+                        "sequence": "AAAAAAAAAAAAAAAAAAAA",
+                        "reference_start": 11,
+                        "reference_end": 30,
+                        "length": 20,
+                        "tm": 60.25,
+                        "gc_percent": 42.5,
+                        "penalty": 0.5,
+                        "metrics": {"PRIMER_LEFT_0_SELF_ANY_TH": "1.2"},
+                    },
+                    "probe": {
+                        "sequence": "CCCCCCCCCCCCCCCCCCCC",
+                        "reference_start": 41,
+                        "reference_end": 60,
+                        "length": 20,
+                        "tm": 70.5,
+                        "gc_percent": 55.0,
+                        "penalty": 0.25,
+                        "metrics": {"PRIMER_INTERNAL_0_HAIRPIN_TH": "0.75"},
+                    },
+                    "reverse_primer": {
+                        "sequence": "GGGGGGGGGGGGGGGGGGGG",
+                        "reference_start": 91,
+                        "reference_end": 110,
+                        "length": 20,
+                        "tm": 61.0,
+                        "gc_percent": 47.5,
+                        "penalty": 0.75,
+                        "metrics": {"PRIMER_RIGHT_0_SELF_END_TH": "0.8"},
+                    },
+                    "product_size": 100,
+                    "pair_penalty": 1.5,
+                    "metrics": {"PRIMER_PAIR_0_COMPL_ANY_TH": "2.75"},
+                },
+            )
+            self.assertEqual(
+                report["primer3_details"]["region-001"]["PRIMER_WARNING"],
+                "fixture warning",
+            )
+            self.assertEqual(
+                report["artifacts"],
+                {
+                    "candidate_regions": "primer_design/candidate_regions.tsv",
+                    "assays": "primer_design/assays.tsv",
+                    "primer3_input": "primer_design/primer3_input.txt",
+                    "primer3_output": "primer_design/primer3_output.txt",
+                },
+            )
+            self.assertNotIn("SEQUENCE_TEMPLATE", report_text)
+
+    def test_disabled_design_removes_only_stale_artifacts_and_publishes_skipped(self):
+        config = PrimerDesignConfig(enabled=False)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+            artifact_dir = output_dir / "primer_design"
+            artifact_dir.mkdir()
+            stale_names = (
+                "candidate_regions.tsv",
+                "assays.tsv",
+                "primer3_input.txt",
+                "primer3_output.txt",
+            )
+            for name in stale_names:
+                (artifact_dir / name).write_text("stale", encoding="utf-8")
+            report_path = artifact_dir / "primer_design_report.json"
+            report_path.write_text('{"status":"COMPLETE"}\n', encoding="utf-8")
+            sibling = artifact_dir / "keep-me.txt"
+            sibling.write_text("preserved", encoding="utf-8")
+
+            with patch(
+                "qpcr_pipeline.primer3.SubprocessPrimer3Runner",
+                side_effect=AssertionError("runner constructed"),
+            ):
+                result = design_primers(_UnreadableConservation(), config, output_dir)
+
+            self.assertEqual(result.status, "SKIPPED")
+            self.assertIsNone(result.reference_id)
+            self.assertEqual(result.candidates, ())
+            self.assertEqual(result.assays, ())
+            self.assertIsNone(result.candidate_regions_path)
+            self.assertIsNone(result.assays_path)
+            self.assertIsNone(result.primer3_input_path)
+            self.assertIsNone(result.primer3_output_path)
+            self.assertEqual(result.report_path, report_path)
+            for name in stale_names:
+                self.assertFalse((artifact_dir / name).exists(), name)
+            self.assertEqual(sibling.read_text(encoding="utf-8"), "preserved")
+            self.assertEqual(
+                json.loads(report_path.read_text(encoding="utf-8")),
+                {
+                    "schema_version": 1,
+                    "status": "SKIPPED",
+                    "enabled": False,
+                    "configuration": {
+                        "enabled": False,
+                        "max_candidate_regions": 10,
+                        "assays_per_region": 5,
+                        "candidate_region_length": 300,
+                        "max_region_overlap_fraction": 0.5,
+                        "min_mean_conservation": 0.9,
+                        "min_minimum_conservation": 0.7,
+                        "min_mean_coverage": 0.9,
+                        "max_mean_gap_frequency": 0.05,
+                        "max_mean_entropy_bits": 0.5,
+                        "min_usable_fraction": 0.8,
+                        "product_size_min": 70,
+                        "product_size_max": 200,
+                        "primer": {
+                            "min_size": 18,
+                            "opt_size": 20,
+                            "max_size": 25,
+                            "min_tm": 58.0,
+                            "opt_tm": 60.0,
+                            "max_tm": 62.0,
+                            "min_gc_percent": 40.0,
+                            "max_gc_percent": 60.0,
+                        },
+                        "probe": {
+                            "min_size": 18,
+                            "opt_size": 25,
+                            "max_size": 30,
+                            "min_tm": 68.0,
+                            "opt_tm": 70.0,
+                            "max_tm": 72.0,
+                            "min_gc_percent": 30.0,
+                            "max_gc_percent": 80.0,
+                        },
+                    },
+                    "reference_id": None,
+                    "counts": {"candidates": 0, "assays": 0},
+                    "candidates": [],
+                    "assays": [],
+                    "primer3_details": {},
+                    "artifacts": {
+                        "candidate_regions": None,
+                        "assays": None,
+                        "primer3_input": None,
+                        "primer3_output": None,
+                    },
+                },
+            )
+
+    def test_enabled_design_without_candidates_publishes_header_only_tsvs(self):
+        conservation = _conservation((), ())
+        config = _permissive_config(enabled=True)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+            artifact_dir = output_dir / "primer_design"
+            artifact_dir.mkdir()
+            (artifact_dir / "primer3_input.txt").write_text("stale", encoding="utf-8")
+            (artifact_dir / "primer3_output.txt").write_text("stale", encoding="utf-8")
+
+            with patch(
+                "qpcr_pipeline.primer3.SubprocessPrimer3Runner",
+                side_effect=AssertionError("runner constructed"),
+            ):
+                result = design_primers(conservation, config, output_dir)
+
+            self.assertEqual(result.status, "COMPLETE")
+            self.assertEqual(result.reference_id, "ref")
+            self.assertEqual(result.candidates, ())
+            self.assertEqual(result.assays, ())
+            self.assertEqual(
+                result.candidate_regions_path, artifact_dir / "candidate_regions.tsv"
+            )
+            self.assertEqual(result.assays_path, artifact_dir / "assays.tsv")
+            self.assertIsNone(result.primer3_input_path)
+            self.assertIsNone(result.primer3_output_path)
+            self.assertEqual(
+                result.candidate_regions_path.read_text(encoding="utf-8"),
+                _CANDIDATE_HEADER,
+            )
+            self.assertEqual(
+                result.assays_path.read_text(encoding="utf-8"), _ASSAY_HEADER
+            )
+            self.assertFalse((artifact_dir / "primer3_input.txt").exists())
+            self.assertFalse((artifact_dir / "primer3_output.txt").exists())
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "COMPLETE")
+            self.assertEqual(report["counts"], {"candidates": 0, "assays": 0})
+            self.assertEqual(
+                report["artifacts"],
+                {
+                    "candidate_regions": "primer_design/candidate_regions.tsv",
+                    "assays": "primer_design/assays.tsv",
+                    "primer3_input": None,
+                    "primer3_output": None,
+                },
+            )
+
+    def test_candidates_with_zero_pairs_publish_raw_exchange_and_explanations(self):
+        conservation = _conservation(
+            _positions(1, 300),
+            (WindowConservation(1, 300, 300, 1.0, 1.0, 1.0, 0.0, 0.0),),
+        )
+        config = _permissive_config(enabled=True, candidate_region_length=300)
+        runner = _LiteralPrimer3Runner(_ZERO_PAIR_PRIMER3_OUTPUT)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+
+            result = design_primers(
+                conservation, config, output_dir, runner=runner
+            )
+
+            self.assertEqual(len(result.candidates), 1)
+            self.assertEqual(result.assays, ())
+            self.assertEqual(result.assays_path.read_text(encoding="utf-8"), _ASSAY_HEADER)
+            self.assertEqual(
+                result.primer3_input_path.read_text(encoding="utf-8"),
+                runner.inputs[0],
+            )
+            self.assertEqual(
+                result.primer3_output_path.read_text(encoding="utf-8"),
+                _ZERO_PAIR_PRIMER3_OUTPUT,
+            )
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["counts"], {"candidates": 1, "assays": 0})
+            self.assertEqual(
+                report["primer3_details"]["region-001"],
+                {
+                    "PRIMER_WARNING": "no viable pair",
+                    "PRIMER_LEFT_EXPLAIN": "considered 1, low tm 1",
+                    "PRIMER_INTERNAL_EXPLAIN": "considered 1, high tm 1",
+                    "PRIMER_RIGHT_EXPLAIN": "considered 1, high tm 1",
+                    "PRIMER_PAIR_EXPLAIN": "considered 0",
+                },
+            )
+
+    def test_runner_and_parser_errors_invalidate_prior_complete_report(self):
+        conservation = _conservation(
+            _positions(1, 300),
+            (WindowConservation(1, 300, 300, 1.0, 1.0, 1.0, 0.0, 0.0),),
+        )
+        config = _permissive_config(enabled=True, candidate_region_length=300)
+        cases = (
+            (
+                "runner error",
+                _RaisingPrimer3Runner(PrimerDesignError("bounded runner failure")),
+                "bounded runner failure",
+            ),
+            (
+                "parser error",
+                _LiteralPrimer3Runner(_PARSER_ERROR_OUTPUT),
+                "literal parser failure",
+            ),
+        )
+        for name, runner, message in cases:
+            with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary_directory:
+                output_dir = Path(temporary_directory)
+                artifact_dir = output_dir / "primer_design"
+                artifact_dir.mkdir()
+                report_path = artifact_dir / "primer_design_report.json"
+                report_path.write_text('{"status":"COMPLETE"}\n', encoding="utf-8")
+
+                with self.assertRaisesRegex(PrimerDesignError, message):
+                    design_primers(conservation, config, output_dir, runner=runner)
+
+                self.assertFalse(report_path.exists())
+                self.assertFalse((artifact_dir / "primer3_input.txt").exists())
+                self.assertFalse((artifact_dir / "primer3_output.txt").exists())
+
+    def test_each_enabled_replacement_is_atomic_report_last_and_hardlink_safe(self):
+        conservation = _conservation(
+            _positions(1, 300),
+            (WindowConservation(1, 300, 300, 1.0, 1.0, 1.0, 0.0, 0.0),),
+        )
+        config = _permissive_config(enabled=True, candidate_region_length=300)
+        publication_order = (
+            "candidate_regions.tsv",
+            "assays.tsv",
+            "primer3_input.txt",
+            "primer3_output.txt",
+            "primer_design_report.json",
+        )
+        original_replace = Path.replace
+
+        for failed_name in publication_order:
+            with self.subTest(destination=failed_name), tempfile.TemporaryDirectory() as temporary_directory:
+                output_dir = Path(temporary_directory)
+                artifact_dir = output_dir / "primer_design"
+                artifact_dir.mkdir()
+                destination = artifact_dir / failed_name
+                frozen_source = output_dir / f"frozen-{failed_name}"
+                frozen_text = (
+                    '{"status":"COMPLETE"}\n'
+                    if failed_name == "primer_design_report.json"
+                    else f"frozen {failed_name}\n"
+                )
+                frozen_source.write_text(frozen_text, encoding="utf-8")
+                os.link(frozen_source, destination)
+                report_path = artifact_dir / "primer_design_report.json"
+                if failed_name != "primer_design_report.json":
+                    report_path.write_text(
+                        '{"status":"COMPLETE"}\n', encoding="utf-8"
+                    )
+                sibling = artifact_dir / "keep-me.txt"
+                sibling.write_text("preserved", encoding="utf-8")
+                attempted_destinations: list[str] = []
+
+                def fail_selected_replace(source: Path, target: Path) -> Path:
+                    target_path = Path(target)
+                    attempted_destinations.append(target_path.name)
+                    if target_path.name == failed_name:
+                        raise OSError(f"replace failed for {failed_name}")
+                    return original_replace(source, target_path)
+
+                with patch.object(
+                    Path,
+                    "replace",
+                    autospec=True,
+                    side_effect=fail_selected_replace,
+                ), self.assertRaisesRegex(OSError, f"replace failed for {failed_name}"):
+                    design_primers(
+                        conservation,
+                        config,
+                        output_dir,
+                        runner=_LiteralPrimer3Runner(_COMPLETE_PRIMER3_OUTPUT),
+                    )
+
+                failed_index = publication_order.index(failed_name)
+                self.assertEqual(
+                    attempted_destinations, list(publication_order[: failed_index + 1])
+                )
+                self.assertFalse(report_path.exists())
+                self.assertEqual(frozen_source.read_text(encoding="utf-8"), frozen_text)
+                self.assertEqual(sibling.read_text(encoding="utf-8"), "preserved")
+                self.assertEqual(list(artifact_dir.glob(".*.tmp")), [])
+
+    def test_disabled_cleanup_precedes_atomic_report_publication(self):
+        config = PrimerDesignConfig(enabled=False)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+            artifact_dir = output_dir / "primer_design"
+            artifact_dir.mkdir()
+            stale_paths = tuple(
+                artifact_dir / name
+                for name in (
+                    "candidate_regions.tsv",
+                    "assays.tsv",
+                    "primer3_input.txt",
+                    "primer3_output.txt",
+                )
+            )
+            for path in stale_paths:
+                path.write_text("stale", encoding="utf-8")
+            frozen_report = output_dir / "frozen-report.json"
+            frozen_report.write_text('{"status":"COMPLETE"}\n', encoding="utf-8")
+            report_path = artifact_dir / "primer_design_report.json"
+            os.link(frozen_report, report_path)
+            sibling = artifact_dir / "keep-me.txt"
+            sibling.write_text("preserved", encoding="utf-8")
+            attempted_destinations: list[str] = []
+
+            def fail_report_replace(source: Path, target: Path) -> Path:
+                del source
+                attempted_destinations.append(Path(target).name)
+                raise OSError("disabled report replace failed")
+
+            with patch.object(
+                Path,
+                "replace",
+                autospec=True,
+                side_effect=fail_report_replace,
+            ), self.assertRaisesRegex(OSError, "disabled report replace failed"):
+                design_primers(_UnreadableConservation(), config, output_dir)
+
+            self.assertEqual(attempted_destinations, ["primer_design_report.json"])
+            self.assertFalse(report_path.exists())
+            self.assertTrue(all(not path.exists() for path in stale_paths))
+            self.assertEqual(
+                frozen_report.read_text(encoding="utf-8"),
+                '{"status":"COMPLETE"}\n',
+            )
+            self.assertEqual(sibling.read_text(encoding="utf-8"), "preserved")
+            self.assertEqual(list(artifact_dir.glob(".*.tmp")), [])

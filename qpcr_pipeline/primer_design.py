@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass, replace
+import uuid
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from qpcr_pipeline.config import PrimerDesignConfig
+from qpcr_pipeline.config import PrimerDesignConfig, validate_primer_design_config
 from qpcr_pipeline.conservation import (
     ConservationResult,
     PositionConservation,
     WindowConservation,
 )
+
+if TYPE_CHECKING:
+    from qpcr_pipeline.primer3 import Primer3Runner
 
 
 class PrimerDesignError(RuntimeError):
@@ -73,6 +78,273 @@ class PrimerDesignResult:
     primer3_input_path: Path | None
     primer3_output_path: Path | None
     report_path: Path
+
+
+_CANDIDATE_HEADER = (
+    "region_id\trank\treference_start\treference_end\tpeak_start\tpeak_end\t"
+    "position_count\tusable_length\tusable_fraction\tmean_conservation\t"
+    "minimum_conservation\tmean_coverage\tmean_gap_frequency\tmean_entropy_bits\n"
+)
+_ASSAY_HEADER = (
+    "assay_id\tregion_id\tprimer3_index\tforward_sequence\t"
+    "forward_reference_start\tforward_reference_end\tforward_length\tforward_tm\t"
+    "forward_gc_percent\tforward_penalty\tprobe_sequence\tprobe_reference_start\t"
+    "probe_reference_end\tprobe_length\tprobe_tm\tprobe_gc_percent\tprobe_penalty\t"
+    "reverse_sequence\treverse_reference_start\treverse_reference_end\treverse_length\t"
+    "reverse_tm\treverse_gc_percent\treverse_penalty\tproduct_size\tpair_penalty\n"
+)
+
+
+def design_primers(
+    conservation: ConservationResult,
+    config: PrimerDesignConfig,
+    output_dir: Path,
+    *,
+    runner: Primer3Runner | None = None,
+) -> PrimerDesignResult:
+    """Select candidate regions and publish auditable Primer3 artifacts."""
+    validate_primer_design_config(config)
+    output_dir = Path(output_dir)
+    paths = _artifact_paths(output_dir)
+    if not config.enabled:
+        report = _report(
+            status="SKIPPED",
+            config=config,
+            reference_id=None,
+            candidates=(),
+            assays=(),
+            primer3_details={},
+            artifacts={
+                "candidate_regions": None,
+                "assays": None,
+                "primer3_input": None,
+                "primer3_output": None,
+            },
+        )
+        paths["report"].parent.mkdir(parents=True, exist_ok=True)
+        paths["report"].unlink(missing_ok=True)
+        for key in ("candidates", "assays", "input", "output"):
+            paths[key].unlink(missing_ok=True)
+        _atomic_write_text(
+            paths["report"], json.dumps(report, indent=2, sort_keys=True) + "\n"
+        )
+        return PrimerDesignResult(
+            status="SKIPPED",
+            reference_id=None,
+            candidates=(),
+            assays=(),
+            candidate_regions_path=None,
+            assays_path=None,
+            primer3_input_path=None,
+            primer3_output_path=None,
+            report_path=paths["report"],
+        )
+
+    candidates = _select_candidate_regions(conservation, config)
+    if not candidates:
+        report = _report(
+            status="COMPLETE",
+            config=config,
+            reference_id=conservation.reference_id,
+            candidates=(),
+            assays=(),
+            primer3_details={},
+            artifacts={
+                "candidate_regions": _relative_path(paths["candidates"], output_dir),
+                "assays": _relative_path(paths["assays"], output_dir),
+                "primer3_input": None,
+                "primer3_output": None,
+            },
+        )
+        paths["report"].parent.mkdir(parents=True, exist_ok=True)
+        paths["report"].unlink(missing_ok=True)
+        _atomic_write_text(paths["candidates"], _candidate_text(()))
+        _atomic_write_text(paths["assays"], _assay_text(()))
+        paths["input"].unlink(missing_ok=True)
+        paths["output"].unlink(missing_ok=True)
+        _atomic_write_text(
+            paths["report"], json.dumps(report, indent=2, sort_keys=True) + "\n"
+        )
+        return PrimerDesignResult(
+            status="COMPLETE",
+            reference_id=conservation.reference_id,
+            candidates=(),
+            assays=(),
+            candidate_regions_path=paths["candidates"],
+            assays_path=paths["assays"],
+            primer3_input_path=None,
+            primer3_output_path=None,
+            report_path=paths["report"],
+        )
+
+    from qpcr_pipeline.primer3 import (
+        SubprocessPrimer3Runner,
+        build_primer3_input,
+        parse_primer3_output,
+    )
+
+    paths["report"].parent.mkdir(parents=True, exist_ok=True)
+    paths["report"].unlink(missing_ok=True)
+    input_text = build_primer3_input(
+        conservation.major_consensus, candidates, config
+    )
+    if runner is None:
+        runner = SubprocessPrimer3Runner()
+    output_text = runner.run(input_text)
+    assays, primer3_details = parse_primer3_output(
+        output_text, candidates, conservation.major_consensus
+    )
+    report = _report(
+        status="COMPLETE",
+        config=config,
+        reference_id=conservation.reference_id,
+        candidates=candidates,
+        assays=assays,
+        primer3_details=primer3_details,
+        artifacts={
+            "candidate_regions": _relative_path(paths["candidates"], output_dir),
+            "assays": _relative_path(paths["assays"], output_dir),
+            "primer3_input": _relative_path(paths["input"], output_dir),
+            "primer3_output": _relative_path(paths["output"], output_dir),
+        },
+    )
+    _atomic_write_text(paths["candidates"], _candidate_text(candidates))
+    _atomic_write_text(paths["assays"], _assay_text(assays))
+    _atomic_write_text(paths["input"], input_text)
+    _atomic_write_text(paths["output"], output_text)
+    _atomic_write_text(
+        paths["report"], json.dumps(report, indent=2, sort_keys=True) + "\n"
+    )
+    return PrimerDesignResult(
+        status="COMPLETE",
+        reference_id=conservation.reference_id,
+        candidates=candidates,
+        assays=assays,
+        candidate_regions_path=paths["candidates"],
+        assays_path=paths["assays"],
+        primer3_input_path=paths["input"],
+        primer3_output_path=paths["output"],
+        report_path=paths["report"],
+    )
+
+
+def _artifact_paths(output_dir: Path) -> dict[str, Path]:
+    directory = output_dir / "primer_design"
+    return {
+        "candidates": directory / "candidate_regions.tsv",
+        "assays": directory / "assays.tsv",
+        "input": directory / "primer3_input.txt",
+        "output": directory / "primer3_output.txt",
+        "report": directory / "primer_design_report.json",
+    }
+
+
+def _candidate_text(candidates: tuple[CandidateRegion, ...]) -> str:
+    lines = [_CANDIDATE_HEADER]
+    for candidate in candidates:
+        lines.append(
+            "\t".join(str(value) for value in asdict(candidate).values()) + "\n"
+        )
+    return "".join(lines)
+
+
+def _assay_text(assays: tuple[AssayCandidate, ...]) -> str:
+    lines = [_ASSAY_HEADER]
+    for assay in assays:
+        values: list[object] = [
+            assay.assay_id,
+            assay.region_id,
+            assay.primer3_index,
+        ]
+        for oligo in (
+            assay.forward_primer,
+            assay.probe,
+            assay.reverse_primer,
+        ):
+            values.extend(
+                (
+                    oligo.sequence,
+                    oligo.reference_start,
+                    oligo.reference_end,
+                    oligo.length,
+                    oligo.tm,
+                    oligo.gc_percent,
+                    "" if oligo.penalty is None else oligo.penalty,
+                )
+            )
+        values.extend(
+            (
+                assay.product_size,
+                "" if assay.pair_penalty is None else assay.pair_penalty,
+            )
+        )
+        lines.append("\t".join(str(value) for value in values) + "\n")
+    return "".join(lines)
+
+
+def _report(
+    *,
+    status: Literal["SKIPPED", "COMPLETE"],
+    config: PrimerDesignConfig,
+    reference_id: str | None,
+    candidates: tuple[CandidateRegion, ...],
+    assays: tuple[AssayCandidate, ...],
+    primer3_details: dict[str, dict[str, str]],
+    artifacts: dict[str, str | None],
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": status,
+        "enabled": config.enabled,
+        "configuration": asdict(config),
+        "reference_id": reference_id,
+        "counts": {"candidates": len(candidates), "assays": len(assays)},
+        "candidates": [asdict(candidate) for candidate in candidates],
+        "assays": [_assay_report(assay) for assay in assays],
+        "primer3_details": primer3_details,
+        "artifacts": artifacts,
+    }
+
+
+def _assay_report(assay: AssayCandidate) -> dict[str, object]:
+    return {
+        "assay_id": assay.assay_id,
+        "region_id": assay.region_id,
+        "primer3_index": assay.primer3_index,
+        "forward_primer": _oligo_report(assay.forward_primer),
+        "probe": _oligo_report(assay.probe),
+        "reverse_primer": _oligo_report(assay.reverse_primer),
+        "product_size": assay.product_size,
+        "pair_penalty": assay.pair_penalty,
+        "metrics": dict(assay.metrics),
+    }
+
+
+def _oligo_report(oligo: DesignedOligo) -> dict[str, object]:
+    return {
+        "sequence": oligo.sequence,
+        "reference_start": oligo.reference_start,
+        "reference_end": oligo.reference_end,
+        "length": oligo.length,
+        "tm": oligo.tm,
+        "gc_percent": oligo.gc_percent,
+        "penalty": oligo.penalty,
+        "metrics": dict(oligo.metrics),
+    }
+
+
+def _relative_path(path: Path, output_dir: Path) -> str:
+    return path.relative_to(output_dir).as_posix()
+
+
+def _atomic_write_text(destination: Path, content: str) -> None:
+    temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _select_candidate_regions(
