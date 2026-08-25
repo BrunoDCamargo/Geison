@@ -126,10 +126,93 @@ Os artefatos publicados sao:
 
 O relatorio permite zoom pela roda do mouse, pan por arraste, restauracao da visao
 completa, detalhes por hover e zoom ao clicar nas janelas mais conservadas. Esta
-etapa apenas calcula e visualiza os picos. A selecao de regioes candidatas para
-desenho de ensaios pertence a issue #7.
+etapa apenas calcula e visualiza os picos.
 
 Com conservacao desabilitada, apenas
 `conservation/conservation_report.json` e publicado com status `SKIPPED`; dados
 cientificos e `report.html` nao sao gerados. `qc_report.json` sempre inclui o
 status, a referencia e as contagens de posicoes e janelas da etapa.
+
+## Desenho de ensaios com Primer3
+
+O desenho de primers e sondas e opcional, vem desabilitado por padrao e depende
+de alinhamento e conservacao habilitados. A forma YAML completa da secao, com
+seus valores padrao, e:
+
+```yaml
+primer_design:
+  enabled: false
+  max_candidate_regions: 10
+  assays_per_region: 5
+  candidate_region_length: 300
+  max_region_overlap_fraction: 0.5
+  min_mean_conservation: 0.90
+  min_minimum_conservation: 0.70
+  min_mean_coverage: 0.90
+  max_mean_gap_frequency: 0.05
+  max_mean_entropy_bits: 0.50
+  min_usable_fraction: 0.80
+  product_size_min: 70
+  product_size_max: 200
+  primer:
+    min_size: 18
+    opt_size: 20
+    max_size: 25
+    min_tm: 58.0
+    opt_tm: 60.0
+    max_tm: 62.0
+    min_gc_percent: 40.0
+    max_gc_percent: 60.0
+  probe:
+    min_size: 18
+    opt_size: 25
+    max_size: 30
+    min_tm: 68.0
+    opt_tm: 70.0
+    max_tm: 72.0
+    min_gc_percent: 30.0
+    max_gc_percent: 80.0
+```
+
+Cada janela de conservacao elegivel e expandida para
+`candidate_region_length`; nas extremidades, o intervalo e deslocado para caber
+na referencia, e uma referencia menor usa seu comprimento total. Intervalos
+iguais sao deduplicados. Os candidatos sao ordenados por maior conservacao
+media, maior conservacao minima, maior cobertura media, menor entropia media,
+menor frequencia media de gaps, maior comprimento utilizavel e, por fim,
+coordenadas iniciais e finais menores. Depois de aceitar um candidato, outro so
+e aceito quando o comprimento de sua intersecao dividido pelo comprimento do
+menor dos dois intervalos e menor ou igual a
+`max_region_overlap_fraction`. Os IDs `region-001`, `region-002`, etc. seguem
+essa ordem.
+
+Quando existe ao menos uma regiao candidata, a execucao exige o executavel
+`primer3_core` no `PATH`. O consenso majoritario completo e enviado em cada
+`SEQUENCE_TEMPLATE`, enquanto `SEQUENCE_INCLUDED_REGION` limita o desenho ao
+candidato. Os artefatos ficam em `primer_design/`:
+
+- `primer_design_report.json`: configuracao efetiva, contagens, diagnosticos do
+  Primer3, ensaios e caminhos dos artefatos;
+- `candidate_regions.tsv`: regioes candidatas ordenadas e suas metricas;
+- `assays.tsv`: pares completos de primer forward, sonda interna e primer
+  reverse;
+- `primer3_input.txt` e `primer3_output.txt`: Boulder-IO enviado e recebido para
+  auditoria, presentes somente quando o Primer3 e executado.
+
+Todas as coordenadas publicadas nos TSV e JSON sao 1-based e inclusivas, tanto
+para candidatos quanto para primers e sondas. O tamanho do produto corresponde
+a `reverse_reference_end - forward_reference_start + 1`. O Boulder-IO bruto e
+preservado sem conversao nos dois artefatos de auditoria.
+
+Com `primer_design.enabled: false`, somente
+`primer_design/primer_design_report.json` e publicado para a etapa, com status
+`SKIPPED`; o runner nao e invocado. Com a etapa habilitada mas sem regioes
+elegiveis, o status e `COMPLETE`, `candidate_regions.tsv` e `assays.tsv` contem
+somente os cabecalhos, e o Primer3 nao e executado. Se o Primer3 nao retornar
+pares completos, `assays.tsv` fica apenas com o cabecalho e a entrada, a saida e
+os diagnosticos continuam preservados. `qc_report.json` inclui o status, a
+referencia e as contagens de candidatos e ensaios.
+
+Esta etapa produz candidatos de ensaio auditaveis. Avaliacao de inclusividade na
+Evaluation Set, especificidade e off-target, decisao final de risco e interface
+de usuario pertencem a etapas posteriores.

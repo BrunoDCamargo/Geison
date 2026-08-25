@@ -15,6 +15,8 @@ from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
 from qpcr_pipeline.conservation import analyze_conservation
 from qpcr_pipeline.local_input import load_genbank, load_local_sequences
 from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen_dataset
+from qpcr_pipeline.primer3 import Primer3Runner
+from qpcr_pipeline.primer_design import design_primers
 from qpcr_pipeline.qc import evaluate_sequences
 
 
@@ -33,6 +35,7 @@ def run_pipeline(
     ncbi_client: NcbiClient | None = None,
     cdhit_runner: CdHitRunner | None = None,
     mafft_runner: MafftRunner | None = None,
+    primer3_runner: Primer3Runner | None = None,
 ) -> RunSummary:
     selected_input = config.selected_input
     output_dir = Path(outdir)
@@ -99,6 +102,12 @@ def run_pipeline(
         output_dir,
         target_name=config.target_name,
     )
+    primer_design = design_primers(
+        conservation,
+        config.primer_design,
+        output_dir,
+        runner=primer3_runner,
+    )
 
     summary = RunSummary(
         status="COMPLETED",
@@ -129,6 +138,12 @@ def run_pipeline(
             "reference_id": conservation.reference_id,
             "position_count": len(conservation.positions),
             "window_count": len(conservation.windows),
+        },
+        "primer_design": {
+            "status": primer_design.status,
+            "reference_id": primer_design.reference_id,
+            "candidate_region_count": len(primer_design.candidates),
+            "assay_count": len(primer_design.assays),
         },
     }
 

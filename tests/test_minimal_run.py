@@ -18,6 +18,7 @@ from qpcr_pipeline.config import (
     ConservationConfig,
     NcbiInputConfig,
     PipelineConfig,
+    PrimerDesignConfig,
 )
 from qpcr_pipeline.ncbi import NcbiFetchedRecord, acquire_ncbi_dataset
 from qpcr_pipeline.pipeline import run_pipeline
@@ -380,6 +381,111 @@ class MinimalPipelineRunTests(unittest.TestCase):
         self.assertEqual(iupac_consensus, ">geison-iupac-consensus\nACST\n")
         self.assertIn("<canvas", html)
 
+    def test_enabled_primer_design_uses_major_consensus_and_publishes_assays(self):
+        class FakeMafftRunner:
+            def run(self, input_path, output_path, config):
+                del config
+                shutil.copyfile(input_path, output_path)
+
+        class FakePrimer3Runner:
+            def __init__(self):
+                self.inputs = []
+
+            def run(self, input_text):
+                self.inputs.append(input_text)
+                return (
+                    "SEQUENCE_ID=region-001\n"
+                    "PRIMER_LEFT_NUM_RETURNED=2\n"
+                    "PRIMER_INTERNAL_NUM_RETURNED=2\n"
+                    "PRIMER_RIGHT_NUM_RETURNED=2\n"
+                    "PRIMER_PAIR_NUM_RETURNED=2\n"
+                    "PRIMER_LEFT_0=10,20\n"
+                    "PRIMER_LEFT_0_SEQUENCE=ACGTACGTACGTACGTACGT\n"
+                    "PRIMER_LEFT_0_TM=60.0\n"
+                    "PRIMER_LEFT_0_GC_PERCENT=50.0\n"
+                    "PRIMER_INTERNAL_0=35,25\n"
+                    "PRIMER_INTERNAL_0_SEQUENCE=ACGTACGTACGTACGTACGTACGTA\n"
+                    "PRIMER_INTERNAL_0_TM=70.0\n"
+                    "PRIMER_INTERNAL_0_GC_PERCENT=48.0\n"
+                    "PRIMER_RIGHT_0=89,20\n"
+                    "PRIMER_RIGHT_0_SEQUENCE=TGCATGCATGCATGCATGCA\n"
+                    "PRIMER_RIGHT_0_TM=60.0\n"
+                    "PRIMER_RIGHT_0_GC_PERCENT=50.0\n"
+                    "PRIMER_PAIR_0_PRODUCT_SIZE=80\n"
+                    "PRIMER_LEFT_1=100,20\n"
+                    "PRIMER_LEFT_1_SEQUENCE=AAAACCCCGGGGTTTTAAAA\n"
+                    "PRIMER_LEFT_1_TM=59.0\n"
+                    "PRIMER_LEFT_1_GC_PERCENT=40.0\n"
+                    "PRIMER_INTERNAL_1=130,20\n"
+                    "PRIMER_INTERNAL_1_SEQUENCE=CCCCAAAATTTTGGGGCCCC\n"
+                    "PRIMER_INTERNAL_1_TM=69.0\n"
+                    "PRIMER_INTERNAL_1_GC_PERCENT=60.0\n"
+                    "PRIMER_RIGHT_1=169,20\n"
+                    "PRIMER_RIGHT_1_SEQUENCE=TTTTGGGGCCCCAAAATTTT\n"
+                    "PRIMER_RIGHT_1_TM=61.0\n"
+                    "PRIMER_RIGHT_1_GC_PERCENT=40.0\n"
+                    "PRIMER_PAIR_1_PRODUCT_SIZE=70\n"
+                    "=\n"
+                )
+
+        consensus = "ACGT" * 75
+        primer3_runner = FakePrimer3Runner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            fasta_path = tmp_path / "target.fasta"
+            outdir = tmp_path / "run"
+            fasta_path.write_text(
+                f">seq-1\n{consensus}\n>seq-2\n{consensus}\n",
+                encoding="utf-8",
+            )
+
+            run_pipeline(
+                PipelineConfig(
+                    target_name="synthetic-target",
+                    input_fasta=fasta_path,
+                    alignment=AlignmentConfig(enabled=True, reference_id="seq-1"),
+                    conservation=ConservationConfig(
+                        enabled=True, window_size=100, step_size=50
+                    ),
+                    primer_design=PrimerDesignConfig(
+                        enabled=True,
+                        max_candidate_regions=1,
+                        assays_per_region=2,
+                    ),
+                ),
+                outdir,
+                mafft_runner=FakeMafftRunner(),
+                primer3_runner=primer3_runner,
+            )
+
+            qc_report = json.loads(
+                (outdir / "qc_report.json").read_text(encoding="utf-8")
+            )
+            assay_ids = [
+                line.split("\t", 1)[0]
+                for line in (outdir / "primer_design" / "assays.tsv")
+                .read_text(encoding="utf-8")
+                .splitlines()[1:]
+            ]
+
+        templates = [
+            line.removeprefix("SEQUENCE_TEMPLATE=")
+            for input_text in primer3_runner.inputs
+            for line in input_text.splitlines()
+            if line.startswith("SEQUENCE_TEMPLATE=")
+        ]
+        self.assertEqual(templates, [consensus])
+        self.assertEqual(
+            assay_ids,
+            ["region-001-assay-001", "region-001-assay-002"],
+        )
+        self.assertEqual(qc_report["primer_design"], {
+            "status": "COMPLETE",
+            "reference_id": "seq-1",
+            "candidate_region_count": 1,
+            "assay_count": 2,
+        })
+
     def test_disabled_local_clustering_does_not_call_runner_and_keeps_evaluation_set(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
@@ -539,6 +645,77 @@ class MinimalPipelineRunTests(unittest.TestCase):
         self.assertFalse((outdir / "conservation" / "consensus_iupac.fasta").exists())
         self.assertFalse((outdir / "report.html").exists())
         self.assertEqual(effective_manifest["status"], "COMPLETE")
+
+    def test_run_rejects_invalid_primer_design_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "run"
+            config = PipelineConfig(
+                target_name="invalid-primer-design",
+                input_fasta=FIXTURE_FASTA,
+                primer_design=PrimerDesignConfig(candidate_region_length=0),
+            )
+
+            with self.assertRaisesRegex(ValueError, "candidate_region_length"):
+                run_pipeline(config, outdir)
+
+            self.assertFalse(outdir.exists())
+
+    def test_run_rejects_enabled_primer_design_without_conservation_before_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "run"
+            config = PipelineConfig(
+                target_name="primer-design-without-conservation",
+                input_fasta=FIXTURE_FASTA,
+                primer_design=PrimerDesignConfig(enabled=True),
+            )
+
+            with self.assertRaisesRegex(ValueError, "requires enabled conservation"):
+                run_pipeline(config, outdir)
+
+            self.assertFalse(outdir.exists())
+
+    def test_disabled_primer_design_publishes_only_skipped_report_without_runner(self):
+        class FailingPrimer3Runner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, input_text):
+                self.calls.append(input_text)
+                raise AssertionError("disabled primer design must not call Primer3")
+
+        runner = FailingPrimer3Runner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "run"
+            run_pipeline(
+                PipelineConfig(
+                    target_name="synthetic-target",
+                    input_fasta=FIXTURE_FASTA,
+                ),
+                outdir,
+                primer3_runner=runner,
+            )
+
+            primer_design_files = {
+                path.name for path in (outdir / "primer_design").iterdir()
+            }
+            primer_design_report = json.loads(
+                (outdir / "primer_design" / "primer_design_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            qc_report = json.loads(
+                (outdir / "qc_report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(primer_design_files, {"primer_design_report.json"})
+        self.assertEqual(primer_design_report["status"], "SKIPPED")
+        self.assertEqual(qc_report["primer_design"], {
+            "status": "SKIPPED",
+            "reference_id": None,
+            "candidate_region_count": 0,
+            "assay_count": 0,
+        })
 
     def test_run_rejects_invalid_conservation_before_output_or_analysis(self):
         cases = (
