@@ -93,6 +93,7 @@ _IUPAC_BASES = {
 }
 _BASES_TO_IUPAC = {bases: code for code, bases in _IUPAC_BASES.items()}
 _CANONICAL_BASES = "ACGT"
+_IUPAC_VOTE_SCALE = 12
 _VALID_ALIGNMENT_SYMBOLS = frozenset(_IUPAC_BASES) | {"-"}
 _POSITION_HEADER = (
     "alignment_position\treference_position\treference_base\tdepth\tcoverage\t"
@@ -329,23 +330,27 @@ def _calculate_positions(
             raise ConservationError(
                 f"Alignment column {coordinate.alignment_position} is all-gap."
             )
-        totals = {base: [] for base in _CANONICAL_BASES}
+        vote_units = {base: 0 for base in _CANONICAL_BASES}
         for symbol in symbols:
             if symbol == "-":
                 continue
             support = _IUPAC_BASES[symbol]
-            contribution = 1 / len(support)
+            contribution = _IUPAC_VOTE_SCALE // len(support)
             for base in support:
-                totals[base].append(contribution)
+                vote_units[base] += contribution
+        vote_unit_depth = depth * _IUPAC_VOTE_SCALE
         frequencies = {
-            base: math.fsum(totals[base]) / depth for base in _CANONICAL_BASES
+            base: vote_units[base] / vote_unit_depth for base in _CANONICAL_BASES
         }
-        maximum = max(frequencies.values())
-        tied = tuple(base for base in _CANONICAL_BASES if frequencies[base] == maximum)
+        maximum_units = max(vote_units.values())
+        maximum = maximum_units / vote_unit_depth
+        tied = tuple(
+            base for base in _CANONICAL_BASES if vote_units[base] == maximum_units
+        )
         reference_base = coordinate.reference_base
         major = reference_base if reference_base in tied else tied[0]
         positive_bases = frozenset(
-            base for base in _CANONICAL_BASES if frequencies[base] > 0
+            base for base in _CANONICAL_BASES if vote_units[base] > 0
         )
         entropy = -math.fsum(
             frequency * math.log2(frequency)

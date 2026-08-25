@@ -153,7 +153,8 @@ const windows=reportData.windows;
 const annotations=reportData.annotations;
 const margins={left:58,right:20,top:22,bottom:70};
 const genomeStart=windows.length?windows[0][0]:1;
-const genomeEnd=windows.length?Math.max(...windows.map(item=>item[1])):1;
+let genomeEnd=1;
+for(const item of windows){if(item[1]>genomeEnd)genomeEnd=item[1]}
 let viewStart=genomeStart;
 let viewEnd=genomeEnd;
 let cssWidth=1;
@@ -294,7 +295,7 @@ function onPointerDown(event){
 
 function nearestWindow(referencePosition){
   let low=0;let high=windows.length-1;
-  while(low<high){const middle=Math.floor((low+high)/2);if(windows[middle][0]<referencePosition)low=middle+1;else high=middle}
+  while(low<high){const middle=Math.floor((low+high)/2);if((windows[middle][0]+windows[middle][1])/2<referencePosition)low=middle+1;else high=middle}
   const candidates=[windows[low],windows[Math.max(0,low-1)]].filter(Boolean).filter(item=>item[1]>=viewStart&&item[0]<=viewEnd);
   if(!candidates.length)return null;
   return candidates.reduce((best,item)=>Math.abs((item[0]+item[1])/2-referencePosition)<Math.abs((best[0]+best[1])/2-referencePosition)?item:best);
