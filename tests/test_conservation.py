@@ -155,6 +155,26 @@ class ConservationCalculationTests(_ConservationTestCase):
             expected,
         )
 
+    def test_exact_fractional_tie_prefers_the_reference_base(self):
+        result = self.run_analysis(
+            alignment(
+                ("ref", "C"),
+                ("s2", "A"),
+                ("s3", "A"),
+                ("s4", "B"),
+                ("s5", "B"),
+                ("s6", "B"),
+                ("s7", "H"),
+            )
+        )
+
+        position = result.positions[0]
+        self.assertEqual(position.frequency_a, 1 / 3)
+        self.assertEqual(position.frequency_c, 1 / 3)
+        self.assertEqual(position.major_allele_frequency, 1 / 3)
+        self.assertEqual(position.major_consensus, "C")
+        self.assertEqual(result.major_consensus, "C")
+
     def test_every_iupac_symbol_expands_to_its_canonical_support_set(self):
         expected_support = {
             "A": "A", "C": "C", "G": "G", "T": "T",

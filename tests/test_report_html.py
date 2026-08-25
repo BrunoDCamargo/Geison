@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,33 @@ def embedded_data(html):
     payload_start = html.index(DATA_MARKER) + len(DATA_MARKER)
     payload_end = html.index("</script>", payload_start)
     return json.loads(html[payload_start:payload_end])
+
+
+def embedded_data_source(html):
+    payload_start = html.index(DATA_MARKER) + len(DATA_MARKER)
+    payload_end = html.index("</script>", payload_start)
+    return html[payload_start:payload_end]
+
+
+def report_javascript(html):
+    payload_end = html.index("</script>", html.index(DATA_MARKER) + len(DATA_MARKER))
+    script_start = html.index("<script>", payload_end) + len("<script>")
+    script_end = html.index("</script>", script_start)
+    return html[script_start:script_end]
+
+
+def javascript_function(source, name):
+    start = source.index(f"function {name}(")
+    opening_brace = source.index("{", start)
+    depth = 0
+    for index in range(opening_brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"Unterminated JavaScript function: {name}")
 
 
 class ConservationReportHtmlTests(unittest.TestCase):
@@ -187,6 +215,71 @@ class ConservationReportHtmlTests(unittest.TestCase):
         self.assertIn('row.addEventListener("click"', html)
         self.assertIn("window.devicePixelRatio", html)
         self.assertNotIn("<svg", html.lower())
+
+    def test_hover_runtime_searches_by_window_centers(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable for report JavaScript verification")
+        windows = tuple(
+            window(start, 0.95, 0.85, 1.0, 0.2)
+            for start in range(1, 202, 10)
+        )
+        html = self.render(windows=windows)
+        source = report_javascript(html)
+        nearest_window = javascript_function(source, "nearestWindow")
+        runtime_source = (
+            'const windows=JSON.parse(require("fs").readFileSync(0,"utf8"));'
+            "const viewStart=1;const viewEnd=250;"
+            f"{nearest_window}"
+            "process.stdout.write(JSON.stringify(nearestWindow(105.5)));"
+        )
+
+        completed = subprocess.run(
+            [node, "-e", runtime_source],
+            input=json.dumps(embedded_data(html)["windows"]),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)[:2], [81, 130])
+
+    def test_large_report_initializes_in_v8_without_argument_expansion(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable for report JavaScript verification")
+        window_count = 150_000
+        windows = tuple(
+            window(start, 0.95, 0.85, 1.0, 0.2)
+            for start in range(1, window_count + 1)
+        )
+        html = self.render(windows=windows)
+        data = embedded_data(html)
+        self.assertEqual(len(data["windows"]), window_count)
+        self.assertEqual(data["windows"][-1][:2], [150_000, 150_049])
+
+        source = report_javascript(html)
+        initialization = source[: source.index("let viewStart=")]
+        runtime_source = (
+            'const payload=require("fs").readFileSync(0,"utf8");'
+            "const canvasStub={getContext:()=>({})};"
+            "const document={getElementById:id=>id===\"geison-report-data\""
+            "?{textContent:payload}:id===\"conservation-canvas\"?canvasStub:{}};"
+            f"{initialization}"
+            "process.stdout.write(String(genomeEnd));"
+        )
+
+        completed = subprocess.run(
+            [node, "-e", runtime_source],
+            input=embedded_data_source(html),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "150049")
 
     def test_empty_report_has_an_accessible_visible_state(self):
         html = self.render(windows=())
