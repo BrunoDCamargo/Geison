@@ -1,4 +1,4 @@
-"""Pure candidate-region selection for Primer3 assay design."""
+"""Select candidates, orchestrate Primer3, and atomically publish assay artifacts."""
 
 from __future__ import annotations
 
