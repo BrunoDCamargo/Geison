@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import shutil
 import subprocess
-import threading
 from typing import Protocol
 
 from qpcr_pipeline.config import PrimerDesignConfig
@@ -32,58 +31,33 @@ class SubprocessPrimer3Runner:
             raise PrimerDesignError(
                 f"Primer3 executable '{self._executable}' was not found on PATH."
             )
-        unicode_errors: list[UnicodeError] = []
-        previous_excepthook = threading.excepthook
-
-        def capture_unicode_error(args: threading.ExceptHookArgs) -> None:
-            if isinstance(args.exc_value, UnicodeError):
-                unicode_errors.append(args.exc_value)
-            else:
-                previous_excepthook(args)
-
-        threading.excepthook = capture_unicode_error
         try:
-            try:
-                completed = subprocess.run(
-                    [executable, "--strict_tags", "--io_version=4"],
-                    input=input_text,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="strict",
-                    check=False,
-                    shell=False,
-                )
-            except UnicodeDecodeError as error:
-                raise PrimerDesignError(
-                    "Primer3 output was not valid UTF-8."
-                ) from error
-            except Exception as error:
-                raise PrimerDesignError(
-                    f"Primer3 execution failed ({type(error).__name__})."
-                ) from error
-        finally:
-            threading.excepthook = previous_excepthook
-        if unicode_errors:
-            error = unicode_errors[0]
-            if isinstance(error, UnicodeDecodeError):
-                raise PrimerDesignError("Primer3 output was not valid UTF-8.")
+            input_bytes = input_text.encode("utf-8", errors="strict")
+            completed = subprocess.run(
+                [executable, "--strict_tags", "--io_version=4"],
+                input=input_bytes,
+                capture_output=True,
+                check=False,
+                shell=False,
+            )
+        except Exception as error:
             raise PrimerDesignError(
                 f"Primer3 execution failed ({type(error).__name__})."
-            )
-        if completed.stdout is None or completed.stderr is None:
+            ) from error
+        try:
+            stdout = completed.stdout.decode("utf-8", errors="strict")
+            stderr = completed.stderr.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as error:
             raise PrimerDesignError("Primer3 output was not valid UTF-8.")
         if completed.returncode != 0:
-            stderr_excerpt = _redact_consensus(
-                completed.stderr, input_text
-            )[:2000]
+            stderr_excerpt = _redact_consensus(stderr, input_text)[:2000]
             raise PrimerDesignError(
                 f"Primer3 exited with status {completed.returncode}: "
                 f"{stderr_excerpt}"
             )
-        if not completed.stdout:
+        if not stdout:
             raise PrimerDesignError("Primer3 produced empty stdout.")
-        return completed.stdout
+        return stdout
 
 
 def _redact_consensus(text: str, input_text: str) -> str:

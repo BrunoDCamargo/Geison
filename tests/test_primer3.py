@@ -1,7 +1,11 @@
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 from qpcr_pipeline.config import OligoConstraints, PrimerDesignConfig
 from qpcr_pipeline.primer3 import (
@@ -799,6 +803,109 @@ class ParsePrimer3OutputTests(unittest.TestCase):
 
 
 class SubprocessPrimer3RunnerTests(unittest.TestCase):
+    def test_overlapping_runs_do_not_mutate_process_thread_exception_hook(self) -> None:
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+        release_first = threading.Event()
+        release_second = threading.Event()
+        call_lock = threading.Lock()
+        call_count = 0
+        outputs: list[str] = []
+        errors: list[BaseException] = []
+        original_hook = threading.excepthook
+        self.addCleanup(setattr, threading, "excepthook", original_hook)
+
+        def coordinated_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+                call_number = call_count
+            if call_number == 1:
+                first_entered.set()
+                release_first.wait(timeout=5.0)
+            else:
+                second_entered.set()
+                release_second.wait(timeout=5.0)
+            return self._successful_completed_process(kwargs["input"])
+
+        def invoke() -> None:
+            try:
+                outputs.append(
+                    SubprocessPrimer3Runner(sys.executable).run(
+                        "SEQUENCE_ID=region-001\n=\n"
+                    )
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        with patch("qpcr_pipeline.primer3.subprocess.run", coordinated_run):
+            first = threading.Thread(target=invoke)
+            second = threading.Thread(target=invoke)
+            first.start()
+            self.assertTrue(first_entered.wait(timeout=5.0))
+            second.start()
+            self.assertTrue(second_entered.wait(timeout=5.0))
+            release_first.set()
+            first.join(timeout=5.0)
+            self.assertFalse(first.is_alive())
+            release_second.set()
+            second.join(timeout=5.0)
+            self.assertFalse(second.is_alive())
+
+        self.assertEqual(errors, [])
+        self.assertEqual(outputs, ["=\n", "=\n"])
+        self.assertIs(threading.excepthook, original_hook)
+
+    def test_unrelated_thread_unicode_error_is_not_attributed_to_runner(self) -> None:
+        runner_entered = threading.Event()
+        release_runner = threading.Event()
+        runner_outputs: list[str] = []
+        runner_errors: list[BaseException] = []
+        unrelated_errors: list[BaseException] = []
+        original_hook = threading.excepthook
+
+        def record_unrelated_error(args: threading.ExceptHookArgs) -> None:
+            unrelated_errors.append(args.exc_value)
+
+        threading.excepthook = record_unrelated_error
+        self.addCleanup(setattr, threading, "excepthook", original_hook)
+
+        def blocking_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+            runner_entered.set()
+            release_runner.wait(timeout=5.0)
+            return self._successful_completed_process(kwargs["input"])
+
+        def invoke_runner() -> None:
+            try:
+                runner_outputs.append(
+                    SubprocessPrimer3Runner(sys.executable).run(
+                        "SEQUENCE_ID=region-001\n=\n"
+                    )
+                )
+            except BaseException as error:
+                runner_errors.append(error)
+
+        def raise_unrelated_error() -> None:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
+
+        with patch("qpcr_pipeline.primer3.subprocess.run", blocking_run):
+            runner = threading.Thread(target=invoke_runner)
+            runner.start()
+            self.assertTrue(runner_entered.wait(timeout=5.0))
+            unrelated = threading.Thread(target=raise_unrelated_error)
+            unrelated.start()
+            unrelated.join(timeout=5.0)
+            self.assertFalse(unrelated.is_alive())
+            release_runner.set()
+            runner.join(timeout=5.0)
+            self.assertFalse(runner.is_alive())
+
+        self.assertEqual(runner_errors, [])
+        self.assertEqual(runner_outputs, ["=\n"])
+        self.assertEqual(len(unrelated_errors), 1)
+        self.assertIsInstance(unrelated_errors[0], UnicodeDecodeError)
+        self.assertIs(threading.excepthook, record_unrelated_error)
+
     def test_uses_fixed_arguments_and_exchanges_stdin_stdout(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             executable = self._write_executable(
@@ -952,6 +1059,14 @@ class SubprocessPrimer3RunnerTests(unittest.TestCase):
 
         self.assertNotIn(CONSENSUS_300, str(raised.exception))
         self.assertIn("<consensus omitted>", str(raised.exception))
+
+    @staticmethod
+    def _successful_completed_process(
+        input_value: object,
+    ) -> subprocess.CompletedProcess:
+        if isinstance(input_value, bytes):
+            return subprocess.CompletedProcess((), 0, stdout=b"=\n", stderr=b"")
+        return subprocess.CompletedProcess((), 0, stdout="=\n", stderr="")
 
     @staticmethod
     def _write_executable(
