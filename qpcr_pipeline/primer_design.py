@@ -254,16 +254,16 @@ def _validate_conservation_input(conservation: ConservationResult) -> None:
     if conservation.status != "COMPLETE":
         raise PrimerDesignError("Candidate selection requires COMPLETE conservation.")
 
-    if not conservation.positions:
-        if conservation.windows or conservation.major_consensus or conservation.iupac_consensus:
-            raise PrimerDesignError("Empty conservation cannot contain positions or windows.")
-        return
-
     if (
         not isinstance(conservation.reference_id, str)
         or not conservation.reference_id.strip()
     ):
         raise PrimerDesignError("Complete conservation requires a reference ID.")
+
+    if not conservation.positions:
+        if conservation.windows or conservation.major_consensus or conservation.iupac_consensus:
+            raise PrimerDesignError("Empty conservation cannot contain positions or windows.")
+        return
 
     reference_length = len(conservation.positions)
     if (

@@ -385,10 +385,21 @@ class CandidateRegionSelectionTests(unittest.TestCase):
         base = _conservation(
             _positions(1, 4), (WindowConservation(1, 4, 4, 1.0, 1.0, 1.0, 0.0, 0.0),)
         )
+        empty = _conservation((), ())
         malformed_cases = (
             ("incomplete status", replace(base, status="SKIPPED"), "COMPLETE"),
             ("missing reference", replace(base, reference_id=None), "reference ID"),
             ("blank reference", replace(base, reference_id=" "), "reference ID"),
+            (
+                "empty missing reference",
+                replace(empty, reference_id=None),
+                "reference ID",
+            ),
+            (
+                "empty blank reference",
+                replace(empty, reference_id=" "),
+                "reference ID",
+            ),
             (
                 "coordinate gap",
                 replace(
