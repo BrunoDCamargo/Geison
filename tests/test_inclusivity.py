@@ -11,8 +11,12 @@ from qpcr_pipeline.inclusivity import (
     OligoVariation,
     ProposedOligoCompatibility,
     _enumerate_hits,
+    _evaluate_original,
     _oligo_for_role,
+    _select_binding,
 )
+from qpcr_pipeline.local_input import LocalSequenceRecord
+from qpcr_pipeline.models import EvaluationSet
 from qpcr_pipeline.primer_design import AssayCandidate, DesignedOligo
 
 
@@ -214,6 +218,134 @@ class InclusivitySearchTests(unittest.TestCase):
     def test_invalid_iupac_input_reports_assay_record_and_role_without_sequence(self):
         with self.assertRaisesRegex(InclusivityError, r"a1.*s1.*FORWARD.*position 3"):
             self._hits("ACX", oligo=self._oligo("ACG", 1, 3))
+
+
+class InclusivityGeometryTests(unittest.TestCase):
+    def _oligo(self, sequence: str, start: int, end: int | None = None) -> DesignedOligo:
+        end = end if end is not None else start + len(sequence) - 1
+        return DesignedOligo(
+            sequence=sequence,
+            reference_start=start,
+            reference_end=end,
+            length=len(sequence),
+            tm=60.0,
+            gc_percent=50.0,
+            penalty=None,
+            metrics=(),
+        )
+
+    def _assay(self, assay_id: str = "a1", *, product_size: int = 16) -> AssayCandidate:
+        return AssayCandidate(
+            assay_id=assay_id,
+            region_id="r1",
+            primer3_index=0,
+            forward_primer=self._oligo("ACGT", 3, 6),
+            probe=self._oligo("TTAA", 9, 12),
+            reverse_primer=self._oligo("AGTC", 15, 18),
+            product_size=product_size,
+            pair_penalty=None,
+            metrics=(),
+        )
+
+    def _record(self, sequence_id: str = "s1", sequence: str = "TTACGTCCTTAAGGGACTAA") -> LocalSequenceRecord:
+        return LocalSequenceRecord(sequence_id, sequence)
+
+    def test_selects_complete_forward_geometry_with_strict_order_and_size(self):
+        selected = _select_binding(
+            self._record(), self._assay(), InclusivityConfig(search_flank=2)
+        )
+        self.assertTrue(selected.geometry_found)
+        self.assertEqual(selected.orientation, "FORWARD")
+        self.assertEqual((selected.source_amplicon_start, selected.source_amplicon_end), (3, 18))
+        self.assertEqual(selected.amplicon_size, 16)
+        self.assertTrue(selected.original_compatible)
+        self.assertTrue(all(hit.public.selected for hit in (selected.forward, selected.probe, selected.reverse)))
+
+    def test_rejects_triplets_when_probe_overlaps_a_primer(self):
+        record = self._record(sequence="TTACGTTAAGGGGGGACTAA")
+        selected = _select_binding(
+            record, self._assay(), InclusivityConfig(search_flank=3, max_hits_per_oligo=1)
+        )
+        self.assertFalse(selected.geometry_found)
+        self.assertIsNone(selected.orientation)
+        self.assertFalse(selected.original_compatible)
+
+    def test_rejects_triplets_outside_the_amplicon_size_delta(self):
+        selected = _select_binding(
+            self._record(sequence="TTACGTCCTTAAGGGGGGGACTAA"),
+            self._assay(),
+            InclusivityConfig(search_flank=4, max_hits_per_oligo=1, max_amplicon_size_delta=1),
+        )
+        self.assertFalse(selected.geometry_found)
+        self.assertIsNone(selected.amplicon_size)
+        self.assertFalse(selected.original_compatible)
+
+    def test_selects_reverse_complement_orientation_and_ascending_source_interval(self):
+        selected = _select_binding(
+            self._record(sequence="TTAGTCCCTTAAGGACGTAA"),
+            self._assay(),
+            InclusivityConfig(search_flank=2),
+        )
+        self.assertTrue(selected.geometry_found)
+        self.assertEqual(selected.orientation, "REVERSE_COMPLEMENT")
+        self.assertEqual((selected.source_amplicon_start, selected.source_amplicon_end), (3, 18))
+        self.assertEqual(selected.amplicon_size, 16)
+
+    def test_evaluates_every_evaluation_record_once_in_assay_major_order(self):
+        records = (self._record("s1"), self._record("s2"))
+        selected = _evaluate_original(
+            records,
+            EvaluationSet(("s1", "s2")),
+            (self._assay("a1"), self._assay("a2")),
+            InclusivityConfig(search_flank=2),
+        )
+        self.assertEqual(
+            [(item.assay.assay_id, item.sequence_id) for item in selected],
+            [("a1", "s1"), ("a1", "s2"), ("a2", "s1"), ("a2", "s2")],
+        )
+
+    def test_rejects_invalid_evaluation_inputs_without_leaking_sequences(self):
+        cases = (
+            ((self._record("s1"),), EvaluationSet(("",)), r"Evaluation Set"),
+            ((self._record("s1"), self._record("s1")), EvaluationSet(("s1",)), r"record"),
+            ((self._record("s2"),), EvaluationSet(("s1",)), r"record"),
+            ((self._record("s2"), self._record("s1")), EvaluationSet(("s1", "s2")), r"order"),
+        )
+        for records, evaluation_set, message in cases:
+            with self.subTest(records=records, evaluation_set=evaluation_set):
+                with self.assertRaisesRegex(InclusivityError, message) as raised:
+                    _evaluate_original(
+                        records,
+                        evaluation_set,
+                        (self._assay(),),
+                        InclusivityConfig(search_flank=2),
+                    )
+                self.assertNotIn("TTACGTCCTTAAGGGACTAA", str(raised.exception))
+
+    def test_accepts_an_empty_evaluation_set(self):
+        self.assertEqual(
+            _evaluate_original((), EvaluationSet(()), (self._assay(),), InclusivityConfig(search_flank=2)),
+            (),
+        )
+
+    def test_rejects_invalid_assay_iupac_with_role_position_context_without_sequence(self):
+        invalid = self._assay()
+        invalid = AssayCandidate(
+            assay_id=invalid.assay_id,
+            region_id=invalid.region_id,
+            primer3_index=invalid.primer3_index,
+            forward_primer=self._oligo("ACXT", 3, 6),
+            probe=invalid.probe,
+            reverse_primer=invalid.reverse_primer,
+            product_size=invalid.product_size,
+            pair_penalty=invalid.pair_penalty,
+            metrics=invalid.metrics,
+        )
+        with self.assertRaisesRegex(InclusivityError, r"a1.*FORWARD.*position 3") as raised:
+            _evaluate_original(
+                (self._record(),), EvaluationSet(("s1",)), (invalid,), InclusivityConfig(search_flank=2)
+            )
+        self.assertNotIn("ACXT", str(raised.exception))
 
 
 if __name__ == "__main__":
