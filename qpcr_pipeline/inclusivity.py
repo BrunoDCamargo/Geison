@@ -9,9 +9,12 @@ from typing import Literal
 from qpcr_pipeline.config import InclusivityConfig
 from qpcr_pipeline.iupac import (
     IupacError,
+    iupac_support,
+    minimal_iupac_symbol,
     mismatch_positions,
     normalize_iupac,
     reverse_complement_iupac,
+    sequence_degeneracy,
 )
 from qpcr_pipeline.local_input import LocalSequenceRecord
 from qpcr_pipeline.models import EvaluationSet
@@ -127,6 +130,16 @@ class InclusivityResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _Compatibility:
+    exact_match: bool
+    mismatch_positions: tuple[int, ...]
+    mismatch_count: int
+    three_prime_mismatch: bool
+    probe_mismatch: bool
+    compatible: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _Hit:
     public: OligoMatch
     oriented_start: int
@@ -157,6 +170,42 @@ def _oligo_for_role(assay: AssayCandidate, role: OligoRole) -> DesignedOligo:
         "PROBE": assay.probe,
         "REVERSE": assay.reverse_primer,
     }[role]
+
+
+def _compatibility(
+    effective_sequence: str,
+    target_in_synthesis_orientation: str,
+    role: OligoRole,
+    config: InclusivityConfig,
+) -> _Compatibility:
+    positions = mismatch_positions(
+        effective_sequence, target_in_synthesis_orientation
+    )
+    three_prime_mismatch = role != "PROBE" and any(
+        position > len(effective_sequence) - config.primer_3_prime_bases
+        for position in positions
+    )
+    compatible = (
+        len(positions)
+        <= (
+            config.max_probe_mismatches
+            if role == "PROBE"
+            else config.max_primer_mismatches
+        )
+        and not (
+            role != "PROBE"
+            and config.reject_primer_3_prime_mismatch
+            and three_prime_mismatch
+        )
+    )
+    return _Compatibility(
+        exact_match=not positions,
+        mismatch_positions=positions,
+        mismatch_count=len(positions),
+        three_prime_mismatch=three_prime_mismatch,
+        probe_mismatch=role == "PROBE" and bool(positions),
+        compatible=compatible,
+    )
 
 
 def _enumerate_hits(
@@ -209,29 +258,18 @@ def _enumerate_hits(
                 if role == "REVERSE"
                 else target_segment
             )
-            positions = mismatch_positions(oligo_sequence, target_in_synthesis_orientation)
+            compatibility = _compatibility(
+                oligo_sequence,
+                target_in_synthesis_orientation,
+                role,
+                config,
+            )
         except IupacError as error:
             raise InclusivityError(
                 f"Invalid IUPAC input for assay {assay_id!r}, record {sequence_id!r}, "
                 f"role {role!r}: {error}"
             ) from error
 
-        three_prime_mismatch = role != "PROBE" and any(
-            position > oligo_length - config.primer_3_prime_bases
-            for position in positions
-        )
-        compatible = (
-            len(positions) <= (
-                config.max_probe_mismatches
-                if role == "PROBE"
-                else config.max_primer_mismatches
-            )
-            and not (
-                role != "PROBE"
-                and config.reject_primer_3_prime_mismatch
-                and three_prime_mismatch
-            )
-        )
         if orientation == "REVERSE_COMPLEMENT":
             source_start = record_length - oriented_end + 1
             source_end = record_length - oriented_start + 1
@@ -250,12 +288,12 @@ def _enumerate_hits(
             expected_start=oligo.reference_start,
             expected_end=oligo.reference_end,
             displacement=abs(oriented_start - oligo.reference_start),
-            mismatch_positions=positions,
-            mismatch_count=len(positions),
-            exact_match=not positions,
-            three_prime_mismatch=three_prime_mismatch,
-            probe_mismatch=role == "PROBE" and bool(positions),
-            compatible=compatible,
+            mismatch_positions=compatibility.mismatch_positions,
+            mismatch_count=compatibility.mismatch_count,
+            exact_match=compatibility.exact_match,
+            three_prime_mismatch=compatibility.three_prime_mismatch,
+            probe_mismatch=compatibility.probe_mismatch,
+            compatible=compatibility.compatible,
             selected=False,
         )
         hits.append(
@@ -269,7 +307,7 @@ def _enumerate_hits(
                 ),
                 sum(
                     position > oligo_length - config.primer_3_prime_bases
-                    for position in positions
+                    for position in compatibility.mismatch_positions
                 )
                 if role != "PROBE"
                 else 0,
@@ -585,3 +623,323 @@ def _evaluate_original(
         for assay in assays
         for record in validated
     )
+
+
+def _variation_rows(
+    selected: tuple[_SelectedBinding, ...],
+    evaluation_set: EvaluationSet,
+    config: InclusivityConfig,
+) -> tuple[OligoVariation, ...]:
+    """Aggregate positional support changes from selected geometric sites only."""
+    assay_order: list[AssayCandidate] = []
+    seen_assays: set[str] = set()
+    for binding in selected:
+        if binding.assay.assay_id not in seen_assays:
+            assay_order.append(binding.assay)
+            seen_assays.add(binding.assay.assay_id)
+
+    evaluation_order = {
+        sequence_id: index
+        for index, sequence_id in enumerate(evaluation_set.sequence_ids)
+    }
+    denominator = len(evaluation_set.sequence_ids)
+    rows: list[OligoVariation] = []
+    for assay in assay_order:
+        assay_bindings = tuple(
+            binding
+            for binding in selected
+            if binding.assay.assay_id == assay.assay_id and binding.geometry_found
+        )
+        for role in ("FORWARD", "PROBE", "REVERSE"):
+            oligo_sequence = normalize_iupac(
+                _oligo_for_role(assay, role).sequence,
+                context=f"assay {assay.assay_id!r} role {role!r} oligo",
+            )
+            sites = tuple(
+                (binding.sequence_id, getattr(binding, role.lower()))
+                for binding in assay_bindings
+                if getattr(binding, role.lower()) is not None
+            )
+            for position, original_symbol in enumerate(oligo_sequence, 1):
+                original_support = iupac_support(original_symbol)
+                affected = tuple(
+                    sequence_id
+                    for sequence_id, hit in sites
+                    if iupac_support(
+                        hit.target_in_synthesis_orientation[position - 1]
+                    ) != original_support
+                )
+                if not affected:
+                    continue
+                affected = tuple(
+                    sorted(
+                        affected,
+                        key=lambda sequence_id: evaluation_order[sequence_id],
+                    )
+                )
+                observed_support = frozenset().union(
+                    *(
+                        iupac_support(
+                            hit.target_in_synthesis_orientation[position - 1]
+                        )
+                        for _, hit in sites
+                    )
+                )
+                rows.append(
+                    OligoVariation(
+                        assay_id=assay.assay_id,
+                        role=role,
+                        oligo_position=position,
+                        original_symbol=original_symbol,
+                        original_support=tuple(sorted(original_support)),
+                        observed_symbol=minimal_iupac_symbol(observed_support),
+                        observed_support=tuple(sorted(observed_support)),
+                        affected_sequence_ids=affected,
+                        affected_sequence_count=len(affected),
+                        affected_fraction=(len(affected) / denominator if denominator else None),
+                        primer_3_prime_position=(
+                            role != "PROBE"
+                            and position > len(oligo_sequence) - config.primer_3_prime_bases
+                        ),
+                    )
+                )
+    return tuple(rows)
+
+
+def _proposal_for_role(
+    assay: AssayCandidate,
+    role: OligoRole,
+    selected: tuple[_SelectedBinding, ...],
+    evaluation_set: EvaluationSet,
+    config: InclusivityConfig,
+) -> DegeneracyProposal:
+    """Choose the best cap-bounded expansion for one immutable assay oligo."""
+    del evaluation_set
+    original = normalize_iupac(
+        _oligo_for_role(assay, role).sequence,
+        context=f"assay {assay.assay_id!r} role {role!r} oligo",
+    )
+    original_degeneracy = sequence_degeneracy(original)
+    sites = tuple(
+        getattr(binding, role.lower())
+        for binding in selected
+        if binding.assay.assay_id == assay.assay_id
+        and binding.geometry_found
+        and getattr(binding, role.lower()) is not None
+    )
+    binding_site_count = len(sites)
+
+    def exact_count(candidate: str) -> int:
+        return sum(
+            not mismatch_positions(candidate, hit.target_in_synthesis_orientation)
+            for hit in sites
+        )
+
+    original_exact_count = exact_count(original)
+    original_fraction = (
+        original_exact_count / binding_site_count if binding_site_count else None
+    )
+
+    def unchanged(status: Literal["UNCHANGED", "REJECTED"], reason: str) -> DegeneracyProposal:
+        return DegeneracyProposal(
+            assay_id=assay.assay_id,
+            role=role,
+            original_sequence=original,
+            proposed_sequence=original,
+            status=status,
+            reason=reason,
+            original_degeneracy=original_degeneracy,
+            proposed_degeneracy=original_degeneracy,
+            changed_positions=(),
+            binding_site_count=binding_site_count,
+            original_exact_count=original_exact_count,
+            original_exact_fraction=original_fraction,
+            proposed_exact_count=original_exact_count,
+            proposed_exact_fraction=original_fraction,
+        )
+
+    if not sites:
+        return unchanged("UNCHANGED", "NO_GEOMETRIC_SITES")
+
+    expansions: list[tuple[int, str]] = []
+    variation_found = False
+    for position, original_symbol in enumerate(original, 1):
+        original_support = iupac_support(original_symbol)
+        observed_support = frozenset().union(
+            *(
+                iupac_support(hit.target_in_synthesis_orientation[position - 1])
+                for hit in sites
+            )
+        )
+        if any(
+            iupac_support(hit.target_in_synthesis_orientation[position - 1])
+            != original_support
+            for hit in sites
+        ):
+            variation_found = True
+        expanded_symbol = minimal_iupac_symbol(original_support | observed_support)
+        if expanded_symbol != original_symbol:
+            expansions.append((position, expanded_symbol))
+
+    if not variation_found:
+        return unchanged("UNCHANGED", "NO_VARIATION")
+
+    def expanded_sequence(changes: tuple[tuple[int, str], ...]) -> str:
+        symbols = list(original)
+        for position, symbol in changes:
+            symbols[position - 1] = symbol
+        return "".join(symbols)
+
+    unrestricted = expanded_sequence(tuple(expansions))
+    if exact_count(unrestricted) <= original_exact_count:
+        return unchanged("UNCHANGED", "NO_IMPROVEMENT")
+
+    protected_start = len(original) - config.primer_3_prime_bases + 1
+    allowed_expansions = tuple(
+        expansion
+        for expansion in expansions
+        if not (
+            role != "PROBE"
+            and not config.allow_primer_3_prime_degeneracy
+            and expansion[0] >= protected_start
+        )
+    )
+    allowed_full = expanded_sequence(allowed_expansions)
+    if exact_count(allowed_full) <= original_exact_count:
+        return unchanged("REJECTED", "REJECTED_3_PRIME")
+
+    limit = (
+        config.max_probe_degeneracy
+        if role == "PROBE"
+        else config.max_primer_degeneracy
+    )
+    best: tuple[tuple[object, ...], str, tuple[int, ...], int] | None = None
+
+    def search(index: int, candidate: str, changed: tuple[int, ...]) -> None:
+        nonlocal best
+        if sequence_degeneracy(candidate) > limit:
+            return
+        if index == len(allowed_expansions):
+            candidate_exact_count = exact_count(candidate)
+            if candidate_exact_count <= original_exact_count:
+                return
+            key = (
+                -candidate_exact_count,
+                sequence_degeneracy(candidate),
+                len(changed),
+                candidate,
+            )
+            if best is None or key < best[0]:
+                best = (key, candidate, changed, candidate_exact_count)
+            return
+
+        position, expanded_symbol = allowed_expansions[index]
+        search(index + 1, candidate, changed)
+        symbols = list(candidate)
+        symbols[position - 1] = expanded_symbol
+        search(index + 1, "".join(symbols), changed + (position,))
+
+    search(0, original, ())
+    if best is None:
+        return unchanged("REJECTED", "REJECTED_LIMIT")
+
+    _, proposed, changed_positions, proposed_exact_count = best
+    return DegeneracyProposal(
+        assay_id=assay.assay_id,
+        role=role,
+        original_sequence=original,
+        proposed_sequence=proposed,
+        status="ACCEPTED",
+        reason="ACCEPTED_IMPROVEMENT",
+        original_degeneracy=original_degeneracy,
+        proposed_degeneracy=sequence_degeneracy(proposed),
+        changed_positions=changed_positions,
+        binding_site_count=binding_site_count,
+        original_exact_count=original_exact_count,
+        original_exact_fraction=original_fraction,
+        proposed_exact_count=proposed_exact_count,
+        proposed_exact_fraction=proposed_exact_count / binding_site_count,
+    )
+
+
+def _proposals(
+    assays: tuple[AssayCandidate, ...],
+    selected: tuple[_SelectedBinding, ...],
+    evaluation_set: EvaluationSet,
+    config: InclusivityConfig,
+) -> tuple[DegeneracyProposal, ...]:
+    """Return exactly three role proposals for every assay in input order."""
+    return tuple(
+        _proposal_for_role(assay, role, selected, evaluation_set, config)
+        for assay in assays
+        for role in ("FORWARD", "PROBE", "REVERSE")
+    )
+
+
+def _assay_results_with_proposals(
+    selected: tuple[_SelectedBinding, ...],
+    proposals: tuple[DegeneracyProposal, ...],
+    config: InclusivityConfig,
+) -> tuple[AssayInclusivity, ...]:
+    """Recompute proposed compatibility at each existing selected geometry."""
+    proposal_by_role = {
+        (proposal.assay_id, proposal.role): proposal for proposal in proposals
+    }
+    results: list[AssayInclusivity] = []
+    for binding in selected:
+        proposed_by_role: dict[OligoRole, ProposedOligoCompatibility | None] = {}
+        for role in ("FORWARD", "PROBE", "REVERSE"):
+            hit = getattr(binding, role.lower())
+            if not binding.geometry_found or hit is None:
+                proposed_by_role[role] = None
+                continue
+            proposal = proposal_by_role[(binding.assay.assay_id, role)]
+            effective_sequence = (
+                proposal.proposed_sequence
+                if proposal.status == "ACCEPTED"
+                else proposal.original_sequence
+            )
+            detail = _compatibility(
+                effective_sequence,
+                hit.target_in_synthesis_orientation,
+                role,
+                config,
+            )
+            proposed_by_role[role] = ProposedOligoCompatibility(
+                role=role,
+                effective_sequence=effective_sequence,
+                exact_match=detail.exact_match,
+                mismatch_positions=detail.mismatch_positions,
+                mismatch_count=detail.mismatch_count,
+                three_prime_mismatch=detail.three_prime_mismatch,
+                probe_mismatch=detail.probe_mismatch,
+                compatible=detail.compatible,
+            )
+
+        proposed_roles = tuple(proposed_by_role[role] for role in ("FORWARD", "PROBE", "REVERSE"))
+        results.append(
+            AssayInclusivity(
+                assay_id=binding.assay.assay_id,
+                sequence_id=binding.sequence_id,
+                orientation=binding.orientation,
+                geometry_found=binding.geometry_found,
+                source_amplicon_start=binding.source_amplicon_start,
+                source_amplicon_end=binding.source_amplicon_end,
+                amplicon_size=binding.amplicon_size,
+                forward_match=binding.forward.public if binding.forward is not None else None,
+                probe_match=binding.probe.public if binding.probe is not None else None,
+                reverse_match=binding.reverse.public if binding.reverse is not None else None,
+                original_compatible=binding.original_compatible,
+                proposed_forward=proposed_by_role["FORWARD"],
+                proposed_probe=proposed_by_role["PROBE"],
+                proposed_reverse=proposed_by_role["REVERSE"],
+                proposed_compatible=(
+                    binding.geometry_found
+                    and all(
+                        proposed is not None and proposed.compatible
+                        for proposed in proposed_roles
+                    )
+                ),
+            )
+        )
+    return tuple(results)

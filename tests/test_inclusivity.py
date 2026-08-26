@@ -1,4 +1,4 @@
-from dataclasses import fields
+from dataclasses import fields, replace
 import unittest
 
 from qpcr_pipeline.config import InclusivityConfig
@@ -11,11 +11,15 @@ from qpcr_pipeline.inclusivity import (
     OligoVariation,
     ProposedOligoCompatibility,
     _Hit,
+    _assay_results_with_proposals,
     _best_fallback,
     _enumerate_hits,
     _evaluate_original,
     _oligo_for_role,
+    _proposal_for_role,
+    _proposals,
     _select_binding,
+    _variation_rows,
 )
 from qpcr_pipeline.local_input import LocalSequenceRecord
 from qpcr_pipeline.models import EvaluationSet
@@ -403,6 +407,419 @@ class InclusivityGeometryTests(unittest.TestCase):
                 (self._record(),), EvaluationSet(("s1",)), (invalid,), InclusivityConfig(search_flank=2)
             )
         self.assertNotIn("ACXT", str(raised.exception))
+
+
+class InclusivityDegeneracyTests(unittest.TestCase):
+    def _oligo(self, sequence: str, start: int) -> DesignedOligo:
+        return DesignedOligo(
+            sequence=sequence,
+            reference_start=start,
+            reference_end=start + len(sequence) - 1,
+            length=len(sequence),
+            tm=60.0,
+            gc_percent=50.0,
+            penalty=None,
+            metrics=(),
+        )
+
+    def _assay(
+        self,
+        *,
+        assay_id: str = "a1",
+        forward: str = "AAAAAAAAAA",
+        probe: str = "AAAAAA",
+        reverse: str = "TTTTTTTTTT",
+    ) -> AssayCandidate:
+        return AssayCandidate(
+            assay_id=assay_id,
+            region_id="r1",
+            primer3_index=0,
+            forward_primer=self._oligo(forward, 3),
+            probe=self._oligo(probe, 15),
+            reverse_primer=self._oligo(reverse, 23),
+            product_size=30,
+            pair_penalty=None,
+            metrics=(),
+        )
+
+    def _record(
+        self,
+        sequence_id: str,
+        *,
+        forward_target: str = "AAAAAAAAAA",
+        probe_target: str = "AAAAAA",
+        reverse_target: str = "TTTTTTTTTT",
+    ) -> LocalSequenceRecord:
+        complement = {"A": "T", "C": "G", "G": "C", "T": "A"}
+        reverse_source = "".join(complement[base] for base in reversed(reverse_target))
+        return LocalSequenceRecord(
+            sequence_id,
+            "GG" + forward_target + "GG" + probe_target + "GG" + reverse_source + "GG",
+        )
+
+    def _selected(
+        self,
+        records: tuple[LocalSequenceRecord, ...],
+        assay: AssayCandidate | None = None,
+    ):
+        assay = assay or self._assay()
+        return _evaluate_original(
+            records,
+            EvaluationSet(tuple(record.sequence_id for record in records)),
+            (assay,),
+            InclusivityConfig(search_flank=0),
+        )
+
+    def test_aggregates_variations_in_evaluation_order(self):
+        evaluation_set = EvaluationSet(("s1", "s2", "s3"))
+        selected = self._selected(
+            (
+                self._record("s1", forward_target="CAAAAAAAAA"),
+                self._record("s2", probe_target="AGAAAA"),
+                self._record("s3", reverse_target="TCTTTTTTTT"),
+            )
+        )
+
+        variations = _variation_rows(
+            tuple(reversed(selected)), evaluation_set, InclusivityConfig()
+        )
+
+        self.assertEqual(
+            [(row.role, row.oligo_position) for row in variations],
+            [("FORWARD", 1), ("PROBE", 2), ("REVERSE", 2)],
+        )
+        probe_variation = variations[1]
+        self.assertEqual(probe_variation.original_symbol, "A")
+        self.assertEqual(probe_variation.original_support, ("A",))
+        self.assertEqual(probe_variation.observed_symbol, "R")
+        self.assertEqual(probe_variation.observed_support, ("A", "G"))
+        self.assertEqual(probe_variation.affected_sequence_ids, ("s2",))
+        self.assertEqual(probe_variation.affected_sequence_count, 1)
+        self.assertEqual(probe_variation.affected_fraction, 1 / 3)
+        self.assertFalse(probe_variation.primer_3_prime_position)
+        self.assertEqual(variations[2].affected_sequence_ids, ("s3",))
+
+    def test_excludes_fallback_hits_without_selected_geometry(self):
+        selected = self._selected(
+            (self._record("s1", forward_target="GAAAAAAAAA"),)
+        )[0]
+        fallback_only = replace(
+            selected,
+            orientation=None,
+            geometry_found=False,
+            source_amplicon_start=None,
+            source_amplicon_end=None,
+            amplicon_size=None,
+            original_compatible=False,
+        )
+
+        self.assertEqual(
+            _variation_rows(
+                (fallback_only,), EvaluationSet(("s1",)), InclusivityConfig()
+            ),
+            (),
+        )
+
+    def test_accepts_internal_expansion_and_preserves_original_assay(self):
+        assay = self._assay()
+        selected = self._selected(
+            (
+                self._record("s1"),
+                self._record("s2", forward_target="AGAAAAAAAA"),
+            ),
+            assay,
+        )
+        original = assay.forward_primer.sequence
+
+        proposal = _proposal_for_role(
+            assay,
+            "FORWARD",
+            selected,
+            EvaluationSet(("s1", "s2")),
+            InclusivityConfig(),
+        )
+
+        self.assertEqual(assay.forward_primer.sequence, original)
+        self.assertEqual(proposal.status, "ACCEPTED")
+        self.assertEqual(proposal.reason, "ACCEPTED_IMPROVEMENT")
+        self.assertEqual(proposal.proposed_sequence, "ARAAAAAAAA")
+        self.assertEqual(proposal.changed_positions, (2,))
+        self.assertEqual((proposal.original_degeneracy, proposal.proposed_degeneracy), (1, 2))
+        self.assertEqual((proposal.original_exact_count, proposal.proposed_exact_count), (1, 2))
+        self.assertEqual((proposal.original_exact_fraction, proposal.proposed_exact_fraction), (0.5, 1.0))
+
+    def test_reports_no_geometric_sites_with_none_fractions(self):
+        assay = self._assay()
+
+        proposal = _proposal_for_role(
+            assay,
+            "FORWARD",
+            (),
+            EvaluationSet(("s1",)),
+            InclusivityConfig(),
+        )
+
+        self.assertEqual((proposal.status, proposal.reason), ("UNCHANGED", "NO_GEOMETRIC_SITES"))
+        self.assertEqual(proposal.proposed_sequence, assay.forward_primer.sequence)
+        self.assertEqual(proposal.changed_positions, ())
+        self.assertEqual(proposal.binding_site_count, 0)
+        self.assertEqual((proposal.original_exact_count, proposal.proposed_exact_count), (0, 0))
+        self.assertIsNone(proposal.original_exact_fraction)
+        self.assertIsNone(proposal.proposed_exact_fraction)
+
+    def test_reports_no_variation_for_invariant_sites(self):
+        assay = self._assay()
+        selected = self._selected((self._record("s1"),), assay)
+
+        proposal = _proposal_for_role(
+            assay,
+            "FORWARD",
+            selected,
+            EvaluationSet(("s1",)),
+            InclusivityConfig(),
+        )
+
+        self.assertEqual((proposal.status, proposal.reason), ("UNCHANGED", "NO_VARIATION"))
+        self.assertEqual((proposal.original_exact_count, proposal.proposed_exact_count), (1, 1))
+        self.assertEqual((proposal.original_exact_fraction, proposal.proposed_exact_fraction), (1.0, 1.0))
+
+    def test_reports_no_improvement_when_original_degeneracy_already_covers_sites(self):
+        assay = self._assay(forward="RAAAAAAAAA")
+        selected = self._selected(
+            (
+                self._record("s1", forward_target="AAAAAAAAAA"),
+                self._record("s2", forward_target="GAAAAAAAAA"),
+            ),
+            assay,
+        )
+
+        proposal = _proposal_for_role(
+            assay,
+            "FORWARD",
+            selected,
+            EvaluationSet(("s1", "s2")),
+            InclusivityConfig(),
+        )
+
+        self.assertEqual((proposal.status, proposal.reason), ("UNCHANGED", "NO_IMPROVEMENT"))
+        self.assertEqual(proposal.proposed_sequence, "RAAAAAAAAA")
+        self.assertEqual((proposal.original_exact_count, proposal.proposed_exact_count), (2, 2))
+        self.assertEqual((proposal.original_degeneracy, proposal.proposed_degeneracy), (2, 2))
+
+    def test_rejects_useful_final_five_primer_expansion_by_default(self):
+        assay = self._assay()
+        selected = self._selected(
+            (
+                self._record("s1"),
+                self._record("s2", forward_target="AAAAAGAAAA"),
+            ),
+            assay,
+        )
+
+        proposal = _proposal_for_role(
+            assay,
+            "FORWARD",
+            selected,
+            EvaluationSet(("s1", "s2")),
+            InclusivityConfig(),
+        )
+
+        self.assertEqual((proposal.status, proposal.reason), ("REJECTED", "REJECTED_3_PRIME"))
+        self.assertEqual(proposal.proposed_sequence, assay.forward_primer.sequence)
+        self.assertEqual(proposal.changed_positions, ())
+        self.assertEqual((proposal.original_exact_count, proposal.proposed_exact_count), (1, 1))
+
+    def test_allows_useful_final_five_primer_expansion_when_configured(self):
+        assay = self._assay()
+        selected = self._selected(
+            (
+                self._record("s1"),
+                self._record("s2", forward_target="AAAAAGAAAA"),
+            ),
+            assay,
+        )
+
+        proposal = _proposal_for_role(
+            assay,
+            "FORWARD",
+            selected,
+            EvaluationSet(("s1", "s2")),
+            InclusivityConfig(allow_primer_3_prime_degeneracy=True),
+        )
+
+        self.assertEqual((proposal.status, proposal.reason), ("ACCEPTED", "ACCEPTED_IMPROVEMENT"))
+        self.assertEqual(proposal.proposed_sequence, "AAAAARAAAA")
+        self.assertEqual(proposal.changed_positions, (6,))
+        self.assertEqual(proposal.proposed_exact_count, 2)
+
+    def test_applies_primer_and_probe_degeneracy_limits_independently(self):
+        assay = self._assay()
+        selected = self._selected(
+            (
+                self._record("s1"),
+                self._record(
+                    "s2",
+                    forward_target="AGAAAAAAAA",
+                    probe_target="AGAAAA",
+                ),
+            ),
+            assay,
+        )
+        config = InclusivityConfig(max_primer_degeneracy=1, max_probe_degeneracy=2)
+
+        primer = _proposal_for_role(
+            assay, "FORWARD", selected, EvaluationSet(("s1", "s2")), config
+        )
+        probe = _proposal_for_role(
+            assay, "PROBE", selected, EvaluationSet(("s1", "s2")), config
+        )
+
+        self.assertEqual((primer.status, primer.reason), ("REJECTED", "REJECTED_LIMIT"))
+        self.assertEqual(primer.proposed_degeneracy, 1)
+        self.assertEqual((probe.status, probe.reason), ("ACCEPTED", "ACCEPTED_IMPROVEMENT"))
+        self.assertEqual(probe.proposed_degeneracy, 2)
+
+    def test_includes_already_degenerate_original_in_total_cap(self):
+        assay = self._assay(forward="RAAAAAAAAA")
+        selected = self._selected(
+            (self._record("s1", forward_target="AGAAAAAAAA"),), assay
+        )
+
+        proposal = _proposal_for_role(
+            assay,
+            "FORWARD",
+            selected,
+            EvaluationSet(("s1",)),
+            InclusivityConfig(max_primer_degeneracy=2),
+        )
+
+        self.assertEqual((proposal.status, proposal.reason), ("REJECTED", "REJECTED_LIMIT"))
+        self.assertEqual((proposal.original_degeneracy, proposal.proposed_degeneracy), (2, 2))
+        self.assertEqual(proposal.proposed_sequence, "RAAAAAAAAA")
+
+    def test_breaks_candidate_ties_by_exact_degeneracy_changes_then_sequence(self):
+        assay = self._assay()
+        selected = self._selected(
+            (
+                self._record("s1", probe_target="GAAAAA"),
+                self._record("s2", probe_target="AGAAAA"),
+            ),
+            assay,
+        )
+
+        proposal = _proposal_for_role(
+            assay,
+            "PROBE",
+            selected,
+            EvaluationSet(("s1", "s2")),
+            InclusivityConfig(max_probe_degeneracy=2),
+        )
+
+        self.assertEqual((proposal.original_exact_count, proposal.proposed_exact_count), (0, 1))
+        self.assertEqual(proposal.proposed_sequence, "ARAAAA")
+        self.assertEqual(proposal.changed_positions, (2,))
+
+    def test_emits_three_no_site_proposals_per_assay_for_empty_evaluation_set(self):
+        assays = (self._assay(assay_id="a1"), self._assay(assay_id="a2"))
+
+        proposals = _proposals(
+            assays, (), EvaluationSet(()), InclusivityConfig()
+        )
+
+        self.assertEqual(
+            [(proposal.assay_id, proposal.role) for proposal in proposals],
+            [
+                ("a1", "FORWARD"), ("a1", "PROBE"), ("a1", "REVERSE"),
+                ("a2", "FORWARD"), ("a2", "PROBE"), ("a2", "REVERSE"),
+            ],
+        )
+        self.assertTrue(
+            all(
+                (proposal.status, proposal.reason)
+                == ("UNCHANGED", "NO_GEOMETRIC_SITES")
+                for proposal in proposals
+            )
+        )
+
+    def test_recomputes_accepted_compatibility_at_fixed_selected_geometry(self):
+        assay = self._assay()
+        evaluation_set = EvaluationSet(("s1", "s2"))
+        selected = self._selected(
+            (
+                self._record("s1"),
+                self._record("s2", forward_target="AGAAAAAAAA"),
+            ),
+            assay,
+        )
+        config = InclusivityConfig()
+        proposals = _proposals((assay,), selected, evaluation_set, config)
+
+        results = _assay_results_with_proposals(selected, proposals, config)
+
+        changed = results[1]
+        self.assertEqual(changed.orientation, selected[1].orientation)
+        self.assertEqual(
+            (changed.source_amplicon_start, changed.source_amplicon_end, changed.amplicon_size),
+            (
+                selected[1].source_amplicon_start,
+                selected[1].source_amplicon_end,
+                selected[1].amplicon_size,
+            ),
+        )
+        self.assertEqual(changed.forward_match, selected[1].forward.public)
+        self.assertEqual(changed.forward_match.mismatch_positions, (2,))
+        self.assertEqual(changed.proposed_forward.effective_sequence, "ARAAAAAAAA")
+        self.assertEqual(changed.proposed_forward.mismatch_positions, ())
+        self.assertTrue(changed.proposed_forward.exact_match)
+        self.assertTrue(changed.proposed_forward.compatible)
+        self.assertTrue(changed.proposed_compatible)
+
+    def test_requires_all_three_proposed_roles_for_complete_compatibility(self):
+        assay = self._assay()
+        evaluation_set = EvaluationSet(("s1",))
+        selected = self._selected(
+            (self._record("s1", probe_target="AGGAAA"),), assay
+        )
+        config = InclusivityConfig(max_probe_degeneracy=1)
+        proposals = _proposals((assay,), selected, evaluation_set, config)
+
+        result = _assay_results_with_proposals(selected, proposals, config)[0]
+
+        self.assertTrue(result.geometry_found)
+        self.assertIsNotNone(result.proposed_forward)
+        self.assertIsNotNone(result.proposed_probe)
+        self.assertIsNotNone(result.proposed_reverse)
+        self.assertEqual(result.proposed_probe.mismatch_positions, (2, 3))
+        self.assertFalse(result.proposed_probe.compatible)
+        self.assertFalse(result.proposed_compatible)
+
+    def test_missing_geometry_has_no_proposed_role_compatibility(self):
+        assay = self._assay()
+        geometric = self._selected((self._record("s1"),), assay)[0]
+        selected = (
+            replace(
+                geometric,
+                orientation=None,
+                geometry_found=False,
+                source_amplicon_start=None,
+                source_amplicon_end=None,
+                amplicon_size=None,
+                original_compatible=False,
+            ),
+        )
+        config = InclusivityConfig()
+        proposals = _proposals(
+            (assay,), selected, EvaluationSet(("s1",)), config
+        )
+
+        result = _assay_results_with_proposals(selected, proposals, config)[0]
+
+        self.assertFalse(result.geometry_found)
+        self.assertEqual(result.forward_match, selected[0].forward.public)
+        self.assertIsNone(result.proposed_forward)
+        self.assertIsNone(result.proposed_probe)
+        self.assertIsNone(result.proposed_reverse)
+        self.assertFalse(result.proposed_compatible)
 
 
 if __name__ == "__main__":
