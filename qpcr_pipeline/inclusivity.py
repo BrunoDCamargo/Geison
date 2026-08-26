@@ -131,6 +131,7 @@ class _Hit:
     public: OligoMatch
     oriented_start: int
     oriented_end: int
+    oriented_target_segment: str
     target_in_synthesis_orientation: str
 
 
@@ -263,6 +264,7 @@ def _enumerate_hits(
                     public=public,
                     oriented_start=oriented_start,
                     oriented_end=oriented_end,
+                    oriented_target_segment=target_segment,
                     target_in_synthesis_orientation=target_in_synthesis_orientation,
                 ),
                 sum(
@@ -559,7 +561,7 @@ def _best_fallback(
             0 if hit.public.orientation == "FORWARD" else 1,
             hit.oriented_start,
             hit.oriented_end,
-            hit.target_in_synthesis_orientation,
+            hit.oriented_target_segment,
         ),
     )
 

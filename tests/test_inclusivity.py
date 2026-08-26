@@ -10,6 +10,8 @@ from qpcr_pipeline.inclusivity import (
     OligoMatch,
     OligoVariation,
     ProposedOligoCompatibility,
+    _Hit,
+    _best_fallback,
     _enumerate_hits,
     _evaluate_original,
     _oligo_for_role,
@@ -290,6 +292,61 @@ class InclusivityGeometryTests(unittest.TestCase):
         self.assertEqual(selected.orientation, "REVERSE_COMPLEMENT")
         self.assertEqual((selected.source_amplicon_start, selected.source_amplicon_end), (3, 18))
         self.assertEqual(selected.amplicon_size, 16)
+
+    def test_breaks_an_exact_candidate_tie_with_forward_orientation(self):
+        sequence = list("C" * 100)
+        for start, target in (
+            (3, "ACGT"),
+            (9, "TTAA"),
+            (15, "GACT"),
+            (83, "AGTC"),
+            (89, "TTAA"),
+            (95, "ACGT"),
+        ):
+            sequence[start - 1:start - 1 + len(target)] = target
+        selected = _select_binding(
+            self._record(sequence="".join(sequence)),
+            self._assay(),
+            InclusivityConfig(search_flank=0),
+        )
+        self.assertEqual(selected.orientation, "FORWARD")
+        self.assertEqual(selected.forward.public.source_start, 3)
+
+    def test_breaks_reverse_fallback_ties_by_raw_oriented_target_segment(self):
+        def hit(target_in_synthesis_orientation: str) -> _Hit:
+            return _Hit(
+                public=OligoMatch(
+                    assay_id="a1",
+                    sequence_id="s1",
+                    role="REVERSE",
+                    orientation="FORWARD",
+                    hit_rank=1,
+                    source_start=1,
+                    source_end=3,
+                    expected_start=1,
+                    expected_end=3,
+                    displacement=0,
+                    mismatch_positions=(),
+                    mismatch_count=0,
+                    exact_match=True,
+                    three_prime_mismatch=False,
+                    probe_mismatch=False,
+                    compatible=True,
+                    selected=False,
+                ),
+                oriented_start=1,
+                oriented_end=3,
+                oriented_target_segment={"AAA": "TTT", "CAA": "TTG"}[target_in_synthesis_orientation],
+                target_in_synthesis_orientation=target_in_synthesis_orientation,
+            )
+
+        synthesis_first = hit("AAA")
+        raw_first = hit("CAA")
+        selected = _best_fallback(
+            (synthesis_first, raw_first), "REVERSE", InclusivityConfig()
+        )
+        self.assertIs(selected, raw_first)
+        self.assertEqual(selected.oriented_target_segment, "TTG")
 
     def test_evaluates_every_evaluation_record_once_in_assay_major_order(self):
         records = (self._record("s1"), self._record("s2"))
