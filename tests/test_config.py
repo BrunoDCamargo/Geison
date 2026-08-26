@@ -6,11 +6,13 @@ from qpcr_pipeline.config import (
     AlignmentConfig,
     ClusteringConfig,
     ConservationConfig,
+    InclusivityConfig,
     NcbiInputConfig,
     OligoConstraints,
     PipelineConfig,
     PrimerDesignConfig,
     load_config,
+    validate_inclusivity_config,
     validate_primer_design_config,
 )
 
@@ -398,6 +400,86 @@ class PipelineConfigTests(unittest.TestCase):
         self.assertEqual(loaded.primer_design.max_candidate_regions, 3)
         self.assertEqual(loaded.primer_design.primer.opt_tm, 59.5)
         self.assertEqual(loaded.primer_design.probe.min_size, 20)
+
+    def test_loads_inclusivity_configuration_and_defaults_when_omitted(self):
+        base = (
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+            "alignment:\n  enabled: true\n"
+            "conservation:\n  enabled: true\n"
+            "primer_design:\n  enabled: true\n"
+        )
+        self.assertEqual(self._load_yaml(base).inclusivity, InclusivityConfig())
+
+        loaded = self._load_yaml(
+            base
+            + "inclusivity:\n"
+            "  enabled: true\n"
+            "  search_flank: 40\n"
+            "  max_hits_per_oligo: 7\n"
+            "  max_primer_mismatches: 1\n"
+            "  max_probe_mismatches: 0\n"
+            "  reject_primer_3_prime_mismatch: false\n"
+            "  primer_3_prime_bases: 4\n"
+            "  max_primer_degeneracy: 8\n"
+            "  max_probe_degeneracy: 2\n"
+            "  allow_primer_3_prime_degeneracy: true\n"
+            "  max_amplicon_size_delta: 5\n"
+        )
+        self.assertEqual(
+            loaded.inclusivity,
+            InclusivityConfig(
+                enabled=True,
+                search_flank=40,
+                max_hits_per_oligo=7,
+                max_primer_mismatches=1,
+                max_probe_mismatches=0,
+                reject_primer_3_prime_mismatch=False,
+                primer_3_prime_bases=4,
+                max_primer_degeneracy=8,
+                max_probe_degeneracy=2,
+                allow_primer_3_prime_degeneracy=True,
+                max_amplicon_size_delta=5,
+            ),
+        )
+
+    def test_rejects_invalid_inclusivity_yaml_configuration(self):
+        base = (
+            "target:\n  name: target\n"
+            f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
+            "alignment:\n  enabled: true\n"
+            "conservation:\n  enabled: true\n"
+            "primer_design:\n  enabled: true\n"
+        )
+        invalid_cases = (
+            ("non-mapping", "inclusivity: true\n", "inclusivity.*mapping"),
+            ("unknown", "inclusivity:\n  extra: 1\n", "inclusivity.*extra.*unrecognized"),
+            ("integer boolean", "inclusivity:\n  enabled: 1\n", "enabled.*boolean"),
+            ("negative zero allowed", "inclusivity:\n  search_flank: -1\n", "search_flank.*non-negative integer"),
+            ("zero positive only", "inclusivity:\n  max_hits_per_oligo: 0\n", "max_hits_per_oligo.*positive integer"),
+            ("fractional integer", "inclusivity:\n  max_probe_degeneracy: 1.5\n", "max_probe_degeneracy.*positive integer"),
+        )
+        for name, section, message in invalid_cases:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                self._load_yaml(base + section)
+
+    def test_rejects_invalid_direct_inclusivity_configuration(self):
+        invalid = (
+            InclusivityConfig(enabled=1),
+            InclusivityConfig(search_flank=-1),
+            InclusivityConfig(max_hits_per_oligo=0),
+            InclusivityConfig(max_probe_degeneracy=1.5),
+        )
+        for config in invalid:
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                validate_inclusivity_config(config)
+
+        with self.assertRaisesRegex(ValueError, "inclusivity.*requires enabled primer design"):
+            _ = PipelineConfig(
+                target_name="target",
+                input_fasta=FIXTURE_FASTA,
+                inclusivity=InclusivityConfig(enabled=True),
+            ).selected_input
 
     def test_rejects_invalid_primer_design_yaml_configuration(self):
         invalid_cases = (

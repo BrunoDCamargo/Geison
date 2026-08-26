@@ -76,6 +76,21 @@ class PrimerDesignConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class InclusivityConfig:
+    enabled: bool = False
+    search_flank: int = 250
+    max_hits_per_oligo: int = 20
+    max_primer_mismatches: int = 2
+    max_probe_mismatches: int = 1
+    reject_primer_3_prime_mismatch: bool = True
+    primer_3_prime_bases: int = 5
+    max_primer_degeneracy: int = 16
+    max_probe_degeneracy: int = 4
+    allow_primer_3_prime_degeneracy: bool = False
+    max_amplicon_size_delta: int = 20
+
+
+@dataclass(frozen=True, slots=True)
 class NcbiInputConfig:
     query: str | None = None
     accessions: tuple[str, ...] = ()
@@ -96,6 +111,7 @@ class PipelineConfig:
     alignment: AlignmentConfig = field(default_factory=AlignmentConfig)
     conservation: ConservationConfig = field(default_factory=ConservationConfig)
     primer_design: PrimerDesignConfig = field(default_factory=PrimerDesignConfig)
+    inclusivity: InclusivityConfig = field(default_factory=InclusivityConfig)
 
     @property
     def selected_input(
@@ -131,6 +147,8 @@ def load_config(path: str | Path) -> PipelineConfig:
     conservation = _parse_conservation_config(conservation_config)
     primer_design_config = raw.get("primer_design", {})
     primer_design = _parse_primer_design_config(primer_design_config)
+    inclusivity_config = raw.get("inclusivity", {})
+    inclusivity = _parse_inclusivity_config(inclusivity_config)
 
     target_name = _required_string(target, "name", section="target")
     input_fasta = _optional_path(input_config, "fasta")
@@ -151,6 +169,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         alignment=alignment,
         conservation=conservation,
         primer_design=primer_design,
+        inclusivity=inclusivity,
     )
     validate_pipeline_config(config)
     return config
@@ -191,14 +210,19 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Pipeline conservation must be a ConservationConfig.")
     if not isinstance(config.primer_design, PrimerDesignConfig):
         raise ValueError("Pipeline primer_design must be a PrimerDesignConfig.")
+    if not isinstance(config.inclusivity, InclusivityConfig):
+        raise ValueError("Pipeline inclusivity must be an InclusivityConfig.")
     validate_clustering_config(config.clustering)
     validate_alignment_config(config.alignment)
     validate_conservation_config(config.conservation)
     validate_primer_design_config(config.primer_design)
+    validate_inclusivity_config(config.inclusivity)
     if config.conservation.enabled and not config.alignment.enabled:
         raise ValueError("Enabled conservation requires enabled alignment.")
     if config.primer_design.enabled and not config.conservation.enabled:
         raise ValueError("Enabled primer design requires enabled conservation.")
+    if config.inclusivity.enabled and not config.primer_design.enabled:
+        raise ValueError("Enabled inclusivity requires enabled primer design.")
     if config.input_ncbi is not None:
         validate_ncbi_input_config(config.input_ncbi)
 
@@ -329,6 +353,36 @@ def validate_conservation_config(config: ConservationConfig) -> None:
             )
     if config.step_size > config.window_size:
         raise ValueError("Conservation step_size cannot exceed window_size.")
+
+
+def validate_inclusivity_config(config: InclusivityConfig) -> None:
+    if not isinstance(config, InclusivityConfig):
+        raise ValueError("Inclusivity configuration must be an InclusivityConfig.")
+    for name in (
+        "enabled",
+        "reject_primer_3_prime_mismatch",
+        "allow_primer_3_prime_degeneracy",
+    ):
+        if not isinstance(getattr(config, name), bool):
+            raise ValueError(f"Inclusivity {name} must be a boolean.")
+    for name in (
+        "search_flank",
+        "max_primer_mismatches",
+        "max_probe_mismatches",
+        "max_amplicon_size_delta",
+    ):
+        value = getattr(config, name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"Inclusivity {name} must be a non-negative integer.")
+    for name in (
+        "max_hits_per_oligo",
+        "primer_3_prime_bases",
+        "max_primer_degeneracy",
+        "max_probe_degeneracy",
+    ):
+        value = getattr(config, name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"Inclusivity {name} must be a positive integer.")
 
 
 def validate_primer_design_config(config: PrimerDesignConfig) -> None:
@@ -532,6 +586,56 @@ def _parse_conservation_config(raw: Any) -> ConservationConfig:
         step_size=raw.get("step_size", 10),
     )
     validate_conservation_config(config)
+    return config
+
+
+def _parse_inclusivity_config(raw: Any) -> InclusivityConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration section 'inclusivity' must be a mapping.")
+    allowed_fields = {
+        "enabled",
+        "search_flank",
+        "max_hits_per_oligo",
+        "max_primer_mismatches",
+        "max_probe_mismatches",
+        "reject_primer_3_prime_mismatch",
+        "primer_3_prime_bases",
+        "max_primer_degeneracy",
+        "max_probe_degeneracy",
+        "allow_primer_3_prime_degeneracy",
+        "max_amplicon_size_delta",
+    }
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ValueError(
+            f"Configuration section 'inclusivity' fields {rendered} are unrecognized."
+        )
+    defaults = InclusivityConfig()
+    config = InclusivityConfig(
+        enabled=raw.get("enabled", defaults.enabled),
+        search_flank=raw.get("search_flank", defaults.search_flank),
+        max_hits_per_oligo=raw.get("max_hits_per_oligo", defaults.max_hits_per_oligo),
+        max_primer_mismatches=raw.get(
+            "max_primer_mismatches", defaults.max_primer_mismatches
+        ),
+        max_probe_mismatches=raw.get("max_probe_mismatches", defaults.max_probe_mismatches),
+        reject_primer_3_prime_mismatch=raw.get(
+            "reject_primer_3_prime_mismatch", defaults.reject_primer_3_prime_mismatch
+        ),
+        primer_3_prime_bases=raw.get("primer_3_prime_bases", defaults.primer_3_prime_bases),
+        max_primer_degeneracy=raw.get(
+            "max_primer_degeneracy", defaults.max_primer_degeneracy
+        ),
+        max_probe_degeneracy=raw.get("max_probe_degeneracy", defaults.max_probe_degeneracy),
+        allow_primer_3_prime_degeneracy=raw.get(
+            "allow_primer_3_prime_degeneracy", defaults.allow_primer_3_prime_degeneracy
+        ),
+        max_amplicon_size_delta=raw.get(
+            "max_amplicon_size_delta", defaults.max_amplicon_size_delta
+        ),
+    )
+    validate_inclusivity_config(config)
     return config
 
 
