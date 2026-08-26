@@ -213,6 +213,7 @@ pares completos, `assays.tsv` fica apenas com o cabecalho e a entrada, a saida e
 os diagnosticos continuam preservados. `qc_report.json` inclui o status, a
 referencia e as contagens de candidatos e ensaios.
 
-Esta etapa produz candidatos de ensaio auditaveis. Avaliacao de inclusividade na
-Evaluation Set, especificidade e off-target, decisao final de risco e interface
-de usuario pertencem a etapas posteriores.
+Esta etapa produz candidatos de ensaio auditaveis. A avaliacao de inclusividade
+contra a Discovery Set pertence a issue #8, e a avaliacao de especificidade
+contra a Evaluation Set pertence a issue #9. A decisao final de risco e a
+interface de usuario pertencem a etapas posteriores.

@@ -199,6 +199,16 @@ def parse_primer3_output(
                 raise PrimerDesignError(
                     f"Primer3 output pair {index} product size must be positive."
                 )
+            if not (
+                forward.reference_start <= forward.reference_end
+                and forward.reference_end < probe.reference_start
+                and probe.reference_end < reverse.reference_start
+                and reverse.reference_start <= reverse.reference_end
+            ):
+                raise PrimerDesignError(
+                    f"Primer3 output pair {index} has invalid assay geometry: "
+                    "expected non-overlapping forward, internal, reverse order."
+                )
             if product_size != coordinate_product_size:
                 raise PrimerDesignError(
                     f"Primer3 output pair {index} reports product size "

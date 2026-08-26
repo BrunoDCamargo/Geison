@@ -48,6 +48,39 @@ def candidate(
     )
 
 
+def _single_assay_output(
+    *,
+    forward: tuple[int, int],
+    probe: tuple[int, int],
+    reverse: tuple[int, int],
+    product_size: int,
+) -> str:
+    forward_position, forward_length = forward
+    probe_position, probe_length = probe
+    reverse_position, reverse_length = reverse
+    return (
+        "SEQUENCE_ID=region-001\n"
+        "PRIMER_LEFT_NUM_RETURNED=1\n"
+        "PRIMER_INTERNAL_NUM_RETURNED=1\n"
+        "PRIMER_RIGHT_NUM_RETURNED=1\n"
+        "PRIMER_PAIR_NUM_RETURNED=1\n"
+        f"PRIMER_LEFT_0={forward_position},{forward_length}\n"
+        f"PRIMER_LEFT_0_SEQUENCE={'A' * forward_length}\n"
+        "PRIMER_LEFT_0_TM=60.0\n"
+        "PRIMER_LEFT_0_GC_PERCENT=50.0\n"
+        f"PRIMER_INTERNAL_0={probe_position},{probe_length}\n"
+        f"PRIMER_INTERNAL_0_SEQUENCE={'C' * probe_length}\n"
+        "PRIMER_INTERNAL_0_TM=70.0\n"
+        "PRIMER_INTERNAL_0_GC_PERCENT=50.0\n"
+        f"PRIMER_RIGHT_0={reverse_position},{reverse_length}\n"
+        f"PRIMER_RIGHT_0_SEQUENCE={'G' * reverse_length}\n"
+        "PRIMER_RIGHT_0_TM=60.0\n"
+        "PRIMER_RIGHT_0_GC_PERCENT=50.0\n"
+        f"PRIMER_PAIR_0_PRODUCT_SIZE={product_size}\n"
+        "=\n"
+    )
+
+
 class BuildPrimer3InputTests(unittest.TestCase):
     def test_serializes_complete_record_in_fixed_order(self) -> None:
         text = build_primer3_input(
@@ -170,6 +203,71 @@ class BuildPrimer3InputTests(unittest.TestCase):
 
 
 class ParsePrimer3OutputTests(unittest.TestCase):
+    def _assert_invalid_geometry(self, output: str) -> None:
+        with self.assertRaisesRegex(
+            PrimerDesignError, "invalid assay geometry"
+        ) as raised:
+            parse_primer3_output(output, (candidate(),), CONSENSUS_300)
+
+        message = str(raised.exception)
+        self.assertLessEqual(len(message), 200)
+        self.assertNotIn("A" * 20, message)
+        self.assertNotIn("C" * 20, message)
+        self.assertNotIn("G" * 20, message)
+
+    def test_rejects_probe_entirely_outside_amplicon(self) -> None:
+        self._assert_invalid_geometry(
+            _single_assay_output(
+                forward=(50, 20),
+                probe=(10, 20),
+                reverse=(149, 20),
+                product_size=100,
+            )
+        )
+
+    def test_rejects_probe_overlapping_either_primer(self) -> None:
+        cases = (
+            ("forward", (24, 20)),
+            ("reverse", (59, 20)),
+        )
+
+        for primer, probe in cases:
+            with self.subTest(overlapping_primer=primer):
+                self._assert_invalid_geometry(
+                    _single_assay_output(
+                        forward=(10, 20),
+                        probe=probe,
+                        reverse=(89, 20),
+                        product_size=80,
+                    )
+                )
+
+    def test_rejects_reversed_or_overlapping_primers(self) -> None:
+        cases = (
+            (
+                "reversed",
+                _single_assay_output(
+                    forward=(99, 20),
+                    probe=(40, 20),
+                    reverse=(108, 30),
+                    product_size=10,
+                ),
+            ),
+            (
+                "overlapping",
+                _single_assay_output(
+                    forward=(10, 30),
+                    probe=(40, 20),
+                    reverse=(59, 30),
+                    product_size=50,
+                ),
+            ),
+        )
+
+        for geometry, output in cases:
+            with self.subTest(geometry=geometry):
+                self._assert_invalid_geometry(output)
+
     def test_parses_complete_assay_with_exact_coordinates_and_metrics(self) -> None:
         output = (
             "SEQUENCE_ID=region-001\n"

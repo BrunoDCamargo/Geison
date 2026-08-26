@@ -353,6 +353,37 @@ class CandidateRegionSelectionTests(unittest.TestCase):
         self.assertEqual([item.region_id for item in regions], ["region-001", "region-002"])
         self.assertEqual([item.rank for item in regions], [1, 2])
 
+    def test_duplicate_interval_tie_uses_originating_window_usable_length(self):
+        positions = list(_positions(1, 300))
+        positions[0] = replace(positions[0], coverage=0.7)
+        positions[1] = replace(positions[1], gap_frequency=0.3)
+        positions[99] = replace(
+            positions[99], coverage=0.85, gap_frequency=0.15
+        )
+        positions[100] = replace(
+            positions[100], coverage=0.85, gap_frequency=0.15
+        )
+        tied_windows = (
+            WindowConservation(1, 2, 2, 1.0, 1.0, 0.85, 0.15, 0.0),
+            WindowConservation(100, 101, 2, 1.0, 1.0, 0.85, 0.15, 0.0),
+        )
+
+        regions = _select_candidate_regions(
+            _conservation(tuple(positions), tied_windows),
+            _permissive_config(
+                candidate_region_length=200,
+                min_mean_coverage=0.8,
+                max_mean_gap_frequency=0.2,
+            ),
+        )
+
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(
+            (regions[0].peak_start, regions[0].peak_end),
+            (100, 101),
+        )
+        self.assertEqual(regions[0].usable_length, 198)
+
     def test_ranks_by_each_reachable_lexicographic_key(self):
         base_config = _permissive_config()
         cases = (
@@ -539,6 +570,71 @@ class CandidateRegionSelectionTests(unittest.TestCase):
 
 
 class PrimerDesignServiceTests(unittest.TestCase):
+    def test_enabled_design_uses_only_reference_anchored_positions_with_insertions(self):
+        reference_positions = _positions(1, 300)
+        insertion = replace(
+            reference_positions[149],
+            alignment_position=151,
+            reference_position=None,
+            reference_base=None,
+            depth=1,
+            coverage=0.1,
+            frequency_a=0.0,
+            frequency_c=1.0,
+            gap_frequency=0.9,
+            major_consensus="C",
+            iupac_consensus="C",
+        )
+        positions_with_insertion = (
+            reference_positions[:150]
+            + (insertion,)
+            + tuple(
+                replace(position, alignment_position=position.alignment_position + 1)
+                for position in reference_positions[150:]
+            )
+        )
+        conservation = replace(
+            _conservation(
+                reference_positions,
+                (WindowConservation(1, 300, 300, 1.0, 1.0, 1.0, 0.0, 0.0),),
+            ),
+            positions=positions_with_insertion,
+        )
+        original_positions = conservation.positions
+        runner = _LiteralPrimer3Runner(_COMPLETE_PRIMER3_OUTPUT)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            try:
+                result = design_primers(
+                    conservation,
+                    PrimerDesignConfig(enabled=True, candidate_region_length=300),
+                    Path(temporary_directory),
+                    runner=runner,
+                )
+            except PrimerDesignError as error:
+                self.fail(f"valid insertion column was rejected: {error}")
+
+        self.assertIs(conservation.positions, original_positions)
+        self.assertEqual(len(conservation.positions), 301)
+        self.assertIsNone(conservation.positions[150].reference_position)
+        self.assertEqual(len(result.candidates), 1)
+        candidate = result.candidates[0]
+        self.assertEqual(
+            (
+                candidate.reference_start,
+                candidate.reference_end,
+                candidate.position_count,
+                candidate.usable_length,
+            ),
+            (1, 300, 300, 300),
+        )
+        self.assertEqual(candidate.mean_conservation, 1.0)
+        self.assertEqual(candidate.mean_coverage, 1.0)
+        self.assertEqual(candidate.mean_gap_frequency, 0.0)
+        self.assertEqual(candidate.usable_fraction, 1.0)
+        self.assertIn(f"SEQUENCE_TEMPLATE={'A' * 300}\n", runner.inputs[0])
+        self.assertIn("SEQUENCE_INCLUDED_REGION=0,300\n", runner.inputs[0])
+
     def test_enabled_design_publishes_typed_auditable_artifacts(self):
         conservation = _conservation(
             _positions(1, 300),

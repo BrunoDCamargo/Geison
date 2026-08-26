@@ -351,11 +351,16 @@ def _select_candidate_regions(
     conservation: ConservationResult, config: PrimerDesignConfig
 ) -> tuple[CandidateRegion, ...]:
     """Expand conservation windows into fixed-length reference intervals."""
-    _validate_conservation_input(conservation)
-    if not conservation.positions:
+    reference_positions = tuple(
+        position
+        for position in conservation.positions
+        if position.reference_position is not None
+    )
+    _validate_conservation_input(conservation, reference_positions)
+    if not reference_positions:
         return ()
 
-    reference_length = len(conservation.positions)
+    reference_length = len(reference_positions)
     generated: list[tuple[CandidateRegion, WindowConservation]] = []
     for window in conservation.windows:
         reference_start, reference_end = _expanded_interval(
@@ -371,7 +376,7 @@ def _select_candidate_regions(
             reference_end=reference_end,
             peak_start=window.reference_start,
             peak_end=window.reference_end,
-            positions=conservation.positions[reference_start - 1:reference_end],
+            positions=reference_positions[reference_start - 1:reference_end],
             config=config,
         )
         if _is_eligible(region, config):
@@ -383,9 +388,9 @@ def _select_candidate_regions(
     for region, window in generated:
         interval = region.reference_start, region.reference_end
         existing = unique_regions.get(interval)
-        if existing is None or _window_ranking_key(window) < _window_ranking_key(
-            existing[1]
-        ):
+        if existing is None or _window_ranking_key(
+            window, reference_positions, config
+        ) < _window_ranking_key(existing[1], reference_positions, config):
             unique_regions[interval] = region, window
 
     selected: list[CandidateRegion] = []
@@ -437,13 +442,7 @@ def _candidate_region(
     config: PrimerDesignConfig,
 ) -> CandidateRegion:
     position_count = len(positions)
-    usable_length = sum(
-        position.major_allele_frequency >= config.min_minimum_conservation
-        and position.coverage >= config.min_mean_coverage
-        and position.gap_frequency <= config.max_mean_gap_frequency
-        and position.entropy_bits <= config.max_mean_entropy_bits
-        for position in positions
-    )
+    usable_length = _usable_length(positions, config)
     return CandidateRegion(
         region_id=region_id,
         rank=rank,
@@ -496,15 +495,35 @@ def _ranking_key(region: CandidateRegion) -> tuple[float | int, ...]:
     )
 
 
-def _window_ranking_key(window: WindowConservation) -> tuple[float | int, ...]:
+def _window_ranking_key(
+    window: WindowConservation,
+    reference_positions: tuple[PositionConservation, ...],
+    config: PrimerDesignConfig,
+) -> tuple[float | int, ...]:
+    window_positions = reference_positions[
+        window.reference_start - 1:window.reference_end
+    ]
     return (
         -window.mean_conservation,
         -window.minimum_conservation,
         -window.mean_coverage,
         window.mean_entropy_bits,
         window.mean_gap_frequency,
+        -_usable_length(window_positions, config),
         window.reference_start,
         window.reference_end,
+    )
+
+
+def _usable_length(
+    positions: tuple[PositionConservation, ...], config: PrimerDesignConfig
+) -> int:
+    return sum(
+        position.major_allele_frequency >= config.min_minimum_conservation
+        and position.coverage >= config.min_mean_coverage
+        and position.gap_frequency <= config.max_mean_gap_frequency
+        and position.entropy_bits <= config.max_mean_entropy_bits
+        for position in positions
     )
 
 
@@ -522,7 +541,10 @@ def _overlap_fraction(first: CandidateRegion, second: CandidateRegion) -> float:
     return overlap_length / shorter_length
 
 
-def _validate_conservation_input(conservation: ConservationResult) -> None:
+def _validate_conservation_input(
+    conservation: ConservationResult,
+    reference_positions: tuple[PositionConservation, ...],
+) -> None:
     if conservation.status != "COMPLETE":
         raise PrimerDesignError("Candidate selection requires COMPLETE conservation.")
 
@@ -537,7 +559,7 @@ def _validate_conservation_input(conservation: ConservationResult) -> None:
             raise PrimerDesignError("Empty conservation cannot contain positions or windows.")
         return
 
-    reference_length = len(conservation.positions)
+    reference_length = len(reference_positions)
     if (
         len(conservation.major_consensus) != reference_length
         or len(conservation.iupac_consensus) != reference_length
@@ -546,7 +568,7 @@ def _validate_conservation_input(conservation: ConservationResult) -> None:
             "Conservation consensus length must match reference positions."
         )
 
-    for expected_position, position in enumerate(conservation.positions, 1):
+    for expected_position, position in enumerate(reference_positions, 1):
         if position.reference_position != expected_position:
             raise PrimerDesignError(
                 "Conservation reference positions must be contiguous from 1."
