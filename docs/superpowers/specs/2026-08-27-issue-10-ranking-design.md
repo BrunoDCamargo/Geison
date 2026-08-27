@@ -420,12 +420,15 @@ A static ordered table plus `<details>` sections is sufficient; no charting libr
 
 - returns `SKIPPED`;
 - does not inspect upstream scientific result integrity;
-- removes stale `ranking/assay_ranking.tsv` and root `report.html`;
+- removes stale `ranking/assay_ranking.tsv`;
+- leaves root `report.html` untouched so an existing conservation report remains backward compatible;
 - publishes only `ranking/ranking_report.json` with `SKIPPED` status.
+
+When ranking is disabled, ownership of root `report.html` remains with the conservation stage. Ranking only assumes ownership of that path when `ranking.enabled: true`.
 
 ### Enabled execution
 
-After ranking config itself is validated, remove stale `ranking/assay_ranking.tsv`, `ranking/ranking_report.json`, and root `report.html` before validating/aggregating enabled upstream evidence. Therefore a failed current ranking run cannot leave a previous successful report looking current.
+After ranking config itself is validated, remove stale `ranking/assay_ranking.tsv`, `ranking/ranking_report.json`, and root `report.html` before validating/aggregating enabled upstream evidence. Therefore a failed current ranking run cannot leave a previous successful ranking report looking current.
 
 All final artifact contents are computed and validated before publication. Each text file is written through a temporary file and atomically replaced, following existing project patterns.
 
@@ -476,6 +479,7 @@ tests/
 Required coverage:
 
 - default disabled behavior and stale cleanup;
+- disabled ranking preserves an existing conservation `report.html`;
 - config thresholds and weight validation;
 - inclusivity at 100%, 90-<100%, and below 90%;
 - configurable inclusivity thresholds;
