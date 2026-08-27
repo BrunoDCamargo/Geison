@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
+import json
 from pathlib import Path
 from typing import Literal
+import uuid
 
-from qpcr_pipeline.config import InclusivityConfig
+from qpcr_pipeline.config import InclusivityConfig, validate_inclusivity_config
 from qpcr_pipeline.iupac import (
     IupacError,
     iupac_support,
@@ -18,7 +20,7 @@ from qpcr_pipeline.iupac import (
 )
 from qpcr_pipeline.local_input import LocalSequenceRecord
 from qpcr_pipeline.models import EvaluationSet
-from qpcr_pipeline.primer_design import AssayCandidate, DesignedOligo
+from qpcr_pipeline.primer_design import AssayCandidate, DesignedOligo, PrimerDesignResult
 
 
 class InclusivityError(RuntimeError):
@@ -127,6 +129,42 @@ class InclusivityResult:
     oligo_variations_path: Path | None
     degeneracy_proposals_path: Path | None
     report_path: Path
+
+
+OLIGO_MATCH_COLUMNS = (
+    "assay_id", "sequence_id", "role", "orientation", "hit_rank",
+    "source_start", "source_end", "expected_start", "expected_end",
+    "displacement", "mismatch_positions", "mismatch_count", "exact_match",
+    "three_prime_mismatch", "probe_mismatch", "compatible", "selected",
+)
+ASSAY_COLUMNS = (
+    "assay_id", "sequence_id", "orientation", "geometry_found",
+    "source_amplicon_start", "source_amplicon_end", "amplicon_size",
+    "forward_hit_rank", "probe_hit_rank", "reverse_hit_rank",
+    "original_forward_compatible", "original_probe_compatible",
+    "original_reverse_compatible", "original_compatible",
+    "proposed_forward_compatible", "proposed_probe_compatible",
+    "proposed_reverse_compatible", "proposed_compatible",
+)
+VARIATION_COLUMNS = (
+    "assay_id", "role", "oligo_position", "original_symbol",
+    "original_support", "observed_symbol", "observed_support",
+    "affected_sequence_ids", "affected_sequence_count", "affected_fraction",
+    "primer_3_prime_position",
+)
+PROPOSAL_COLUMNS = (
+    "assay_id", "role", "original_sequence", "proposed_sequence", "status",
+    "reason", "original_degeneracy", "proposed_degeneracy", "changed_positions",
+    "binding_site_count", "original_exact_count", "original_exact_fraction",
+    "proposed_exact_count", "proposed_exact_fraction",
+)
+
+_DATA_ARTIFACT_NAMES = (
+    "oligo_matches.tsv",
+    "assay_inclusivity.tsv",
+    "oligo_variations.tsv",
+    "degeneracy_proposals.tsv",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -943,3 +981,255 @@ def _assay_results_with_proposals(
             )
         )
     return tuple(results)
+
+
+def _artifact_paths(output_dir: Path) -> dict[str, Path]:
+    directory = output_dir / "inclusivity"
+    return {
+        "oligo_matches": directory / "oligo_matches.tsv",
+        "assay_inclusivity": directory / "assay_inclusivity.tsv",
+        "oligo_variations": directory / "oligo_variations.tsv",
+        "degeneracy_proposals": directory / "degeneracy_proposals.tsv",
+        "report": directory / "inclusivity_report.json",
+    }
+
+
+def _relative_path(path: Path, output_dir: Path) -> str:
+    return path.relative_to(output_dir).as_posix()
+
+
+def _tsv_scalar(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, tuple):
+        return ",".join(_tsv_scalar(item) for item in value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _tsv_text(columns: tuple[str, ...], rows: tuple[tuple[object, ...], ...]) -> str:
+    return "".join(
+        ("\t".join(columns) + "\n",)
+        + tuple("\t".join(_tsv_scalar(value) for value in row) + "\n" for row in rows)
+    )
+
+
+def _oligo_match_text(matches: tuple[OligoMatch, ...]) -> str:
+    return _tsv_text(
+        OLIGO_MATCH_COLUMNS,
+        tuple(
+            (
+                match.assay_id, match.sequence_id, match.role, match.orientation,
+                match.hit_rank, match.source_start, match.source_end,
+                match.expected_start, match.expected_end, match.displacement,
+                match.mismatch_positions, match.mismatch_count, match.exact_match,
+                match.three_prime_mismatch, match.probe_mismatch, match.compatible,
+                match.selected,
+            )
+            for match in matches
+        ),
+    )
+
+
+def _assay_text(results: tuple[AssayInclusivity, ...]) -> str:
+    return _tsv_text(
+        ASSAY_COLUMNS,
+        tuple(
+            (
+                result.assay_id, result.sequence_id, result.orientation,
+                result.geometry_found, result.source_amplicon_start,
+                result.source_amplicon_end, result.amplicon_size,
+                result.forward_match.hit_rank if result.forward_match else None,
+                result.probe_match.hit_rank if result.probe_match else None,
+                result.reverse_match.hit_rank if result.reverse_match else None,
+                result.forward_match.compatible if result.forward_match else None,
+                result.probe_match.compatible if result.probe_match else None,
+                result.reverse_match.compatible if result.reverse_match else None,
+                result.original_compatible,
+                result.proposed_forward.compatible if result.proposed_forward else None,
+                result.proposed_probe.compatible if result.proposed_probe else None,
+                result.proposed_reverse.compatible if result.proposed_reverse else None,
+                result.proposed_compatible,
+            )
+            for result in results
+        ),
+    )
+
+
+def _variation_text(variations: tuple[OligoVariation, ...]) -> str:
+    return _tsv_text(
+        VARIATION_COLUMNS,
+        tuple(
+            (
+                variation.assay_id, variation.role, variation.oligo_position,
+                variation.original_symbol, variation.original_support,
+                variation.observed_symbol, variation.observed_support,
+                variation.affected_sequence_ids, variation.affected_sequence_count,
+                variation.affected_fraction, variation.primer_3_prime_position,
+            )
+            for variation in variations
+        ),
+    )
+
+
+def _proposal_text(proposals: tuple[DegeneracyProposal, ...]) -> str:
+    return _tsv_text(
+        PROPOSAL_COLUMNS,
+        tuple(
+            (
+                proposal.assay_id, proposal.role, proposal.original_sequence,
+                proposal.proposed_sequence, proposal.status, proposal.reason,
+                proposal.original_degeneracy, proposal.proposed_degeneracy,
+                proposal.changed_positions, proposal.binding_site_count,
+                proposal.original_exact_count, proposal.original_exact_fraction,
+                proposal.proposed_exact_count, proposal.proposed_exact_fraction,
+            )
+            for proposal in proposals
+        ),
+    )
+
+
+def _json_value(value: object) -> object:
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _json_value(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    return value
+
+
+def _counts(
+    evaluation_sequence_ids: tuple[str, ...],
+    assays: tuple[AssayCandidate, ...],
+    assay_results: tuple[AssayInclusivity, ...],
+    oligo_matches: tuple[OligoMatch, ...],
+    variations: tuple[OligoVariation, ...],
+    proposals: tuple[DegeneracyProposal, ...],
+) -> dict[str, int]:
+    return {
+        "evaluation_sequences": len(evaluation_sequence_ids),
+        "assays": len(assays),
+        "assay_evaluations": len(assay_results),
+        "retained_oligo_hits": len(oligo_matches),
+        "variations": len(variations),
+        "proposals": len(proposals),
+        "accepted_proposals": sum(proposal.status == "ACCEPTED" for proposal in proposals),
+        "original_compatible": sum(result.original_compatible for result in assay_results),
+        "proposed_compatible": sum(result.proposed_compatible for result in assay_results),
+    }
+
+
+def _report(
+    *,
+    status: Literal["SKIPPED", "COMPLETE"],
+    config: InclusivityConfig,
+    evaluation_sequence_ids: tuple[str, ...],
+    assays: tuple[AssayCandidate, ...],
+    oligo_matches: tuple[OligoMatch, ...],
+    assay_results: tuple[AssayInclusivity, ...],
+    variations: tuple[OligoVariation, ...],
+    proposals: tuple[DegeneracyProposal, ...],
+    artifacts: dict[str, str | None],
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": status,
+        "enabled": config.enabled,
+        "configuration": _json_value(config),
+        "evaluation_sequence_ids": _json_value(evaluation_sequence_ids),
+        "counts": _counts(
+            evaluation_sequence_ids, assays, assay_results, oligo_matches, variations, proposals
+        ),
+        "oligo_matches": _json_value(oligo_matches),
+        "assay_results": _json_value(assay_results),
+        "variations": _json_value(variations),
+        "proposals": _json_value(proposals),
+        "artifacts": artifacts,
+    }
+
+
+def _atomic_write_text(destination: Path, content: str) -> None:
+    temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def evaluate_inclusivity(
+    records: tuple[LocalSequenceRecord, ...],
+    evaluation_set: EvaluationSet,
+    primer_design: PrimerDesignResult,
+    config: InclusivityConfig,
+    output_dir: Path,
+) -> InclusivityResult:
+    """Evaluate local assay inclusivity and atomically publish public artifacts."""
+    validate_inclusivity_config(config)
+    output_dir = Path(output_dir)
+    paths = _artifact_paths(output_dir)
+
+    if not config.enabled:
+        report = _report(
+            status="SKIPPED", config=config, evaluation_sequence_ids=(), assays=(),
+            oligo_matches=(), assay_results=(), variations=(), proposals=(),
+            artifacts={
+                "oligo_matches": None,
+                "assay_inclusivity": None,
+                "oligo_variations": None,
+                "degeneracy_proposals": None,
+            },
+        )
+        paths["report"].parent.mkdir(parents=True, exist_ok=True)
+        paths["report"].unlink(missing_ok=True)
+        for name in _DATA_ARTIFACT_NAMES:
+            (paths["report"].parent / name).unlink(missing_ok=True)
+        _atomic_write_text(
+            paths["report"], json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        )
+        return InclusivityResult(
+            status="SKIPPED", evaluation_sequence_ids=(), oligo_matches=(),
+            assay_results=(), variations=(), proposals=(), oligo_matches_path=None,
+            assay_inclusivity_path=None, oligo_variations_path=None,
+            degeneracy_proposals_path=None, report_path=paths["report"],
+        )
+
+    if not isinstance(primer_design, PrimerDesignResult) or primer_design.status != "COMPLETE":
+        raise InclusivityError("Inclusivity evaluation requires a COMPLETE PrimerDesignResult.")
+
+    selected = _evaluate_original(records, evaluation_set, primer_design.assays, config)
+    variations = _variation_rows(selected, evaluation_set, config)
+    proposals = _proposals(primer_design.assays, selected, evaluation_set, config)
+    assay_results = _assay_results_with_proposals(selected, proposals, config)
+    oligo_matches = tuple(hit.public for binding in selected for hit in binding.retained_hits)
+    report = _report(
+        status="COMPLETE", config=config,
+        evaluation_sequence_ids=evaluation_set.sequence_ids, assays=primer_design.assays,
+        oligo_matches=oligo_matches, assay_results=assay_results,
+        variations=variations, proposals=proposals,
+        artifacts={
+            key: _relative_path(paths[key], output_dir)
+            for key in ("oligo_matches", "assay_inclusivity", "oligo_variations", "degeneracy_proposals")
+        },
+    )
+    paths["report"].parent.mkdir(parents=True, exist_ok=True)
+    paths["report"].unlink(missing_ok=True)
+    _atomic_write_text(paths["oligo_matches"], _oligo_match_text(oligo_matches))
+    _atomic_write_text(paths["assay_inclusivity"], _assay_text(assay_results))
+    _atomic_write_text(paths["oligo_variations"], _variation_text(variations))
+    _atomic_write_text(paths["degeneracy_proposals"], _proposal_text(proposals))
+    _atomic_write_text(
+        paths["report"], json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    )
+    return InclusivityResult(
+        status="COMPLETE", evaluation_sequence_ids=evaluation_set.sequence_ids,
+        oligo_matches=oligo_matches, assay_results=assay_results,
+        variations=variations, proposals=proposals,
+        oligo_matches_path=paths["oligo_matches"],
+        assay_inclusivity_path=paths["assay_inclusivity"],
+        oligo_variations_path=paths["oligo_variations"],
+        degeneracy_proposals_path=paths["degeneracy_proposals"], report_path=paths["report"],
+    )

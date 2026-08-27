@@ -1,5 +1,9 @@
 from dataclasses import fields, replace
+import json
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from qpcr_pipeline.config import InclusivityConfig
 from qpcr_pipeline.inclusivity import (
@@ -20,10 +24,12 @@ from qpcr_pipeline.inclusivity import (
     _proposals,
     _select_binding,
     _variation_rows,
+    evaluate_inclusivity,
 )
 from qpcr_pipeline.local_input import LocalSequenceRecord
 from qpcr_pipeline.models import EvaluationSet
 from qpcr_pipeline.primer_design import AssayCandidate, DesignedOligo
+from qpcr_pipeline.primer_design import PrimerDesignResult
 
 
 class InclusivitySearchTests(unittest.TestCase):
@@ -820,6 +826,301 @@ class InclusivityDegeneracyTests(unittest.TestCase):
         self.assertIsNone(result.proposed_probe)
         self.assertIsNone(result.proposed_reverse)
         self.assertFalse(result.proposed_compatible)
+
+
+class InclusivityArtifactTests(unittest.TestCase):
+    def _oligo(self, sequence: str, start: int) -> DesignedOligo:
+        return DesignedOligo(
+            sequence=sequence,
+            reference_start=start,
+            reference_end=start + len(sequence) - 1,
+            length=len(sequence),
+            tm=60.0,
+            gc_percent=50.0,
+            penalty=None,
+            metrics=(),
+        )
+
+    def _assay(self, assay_id: str = "a1") -> AssayCandidate:
+        return AssayCandidate(
+            assay_id=assay_id,
+            region_id="r1",
+            primer3_index=0,
+            forward_primer=self._oligo("AAAAAAAAAA", 3),
+            probe=self._oligo("AAAAAA", 15),
+            reverse_primer=self._oligo("TTTTTTTTTT", 23),
+            product_size=30,
+            pair_penalty=None,
+            metrics=(),
+        )
+
+    def _primer_result(
+        self, *, status: str = "COMPLETE", assays: tuple[AssayCandidate, ...] | None = None
+    ) -> PrimerDesignResult:
+        return PrimerDesignResult(
+            status=status,
+            reference_id="reference" if status == "COMPLETE" else None,
+            candidates=(),
+            assays=assays if assays is not None else (self._assay(),),
+            candidate_regions_path=None,
+            assays_path=None,
+            primer3_input_path=None,
+            primer3_output_path=None,
+            report_path=Path("primer_design_report.json"),
+        )
+
+    def _record(self, sequence_id: str, *, forward: str = "AAAAAAAAAA") -> LocalSequenceRecord:
+        return LocalSequenceRecord(
+            sequence_id,
+            "GG" + forward + "GG" + "AAAAAA" + "GG" + "AAAAAAAAAA" + "GG",
+        )
+
+    def test_disabled_publishes_only_skipped_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            result = evaluate_inclusivity(
+                records=(object(),),
+                evaluation_set=object(),
+                primer_design=self._primer_result(status="SKIPPED"),
+                config=InclusivityConfig(enabled=False),
+                output_dir=output_dir,
+            )
+
+            self.assertEqual(result.status, "SKIPPED")
+            self.assertEqual(result.evaluation_sequence_ids, ())
+            self.assertEqual(result.oligo_matches, ())
+            self.assertEqual(result.assay_results, ())
+            self.assertEqual(result.variations, ())
+            self.assertEqual(result.proposals, ())
+            self.assertEqual(
+                (result.oligo_matches_path, result.assay_inclusivity_path,
+                 result.oligo_variations_path, result.degeneracy_proposals_path),
+                (None, None, None, None),
+            )
+            artifact_dir = output_dir / "inclusivity"
+            self.assertEqual(
+                {path.name for path in artifact_dir.iterdir()},
+                {"inclusivity_report.json"},
+            )
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "SKIPPED")
+            self.assertFalse(report["enabled"])
+            self.assertEqual(report["artifacts"], {
+                "assay_inclusivity": None,
+                "degeneracy_proposals": None,
+                "oligo_matches": None,
+                "oligo_variations": None,
+            })
+
+    def test_enabled_publishes_normalized_public_artifacts(self):
+        records = (self._record("s1"), self._record("s2", forward="AGAAAAAAAA"))
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            result = evaluate_inclusivity(
+                records=records,
+                evaluation_set=EvaluationSet(("s1", "s2")),
+                primer_design=self._primer_result(),
+                config=InclusivityConfig(enabled=True, search_flank=0),
+                output_dir=output_dir,
+            )
+
+            self.assertEqual(result.status, "COMPLETE")
+            self.assertEqual(result.evaluation_sequence_ids, ("s1", "s2"))
+            self.assertEqual(
+                [path.name for path in (
+                    result.oligo_matches_path, result.assay_inclusivity_path,
+                    result.oligo_variations_path, result.degeneracy_proposals_path,
+                )],
+                ["oligo_matches.tsv", "assay_inclusivity.tsv", "oligo_variations.tsv", "degeneracy_proposals.tsv"],
+            )
+            self.assertEqual(
+                [(item.assay_id, item.sequence_id) for item in result.assay_results],
+                [("a1", "s1"), ("a1", "s2")],
+            )
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+            self.assertEqual(tuple(report), (
+                "artifacts", "assay_results", "configuration", "counts", "enabled",
+                "evaluation_sequence_ids", "oligo_matches", "proposals", "schema_version",
+                "status", "variations",
+            ))
+            self.assertEqual(report["schema_version"], 1)
+            self.assertEqual(report["artifacts"]["oligo_matches"], "inclusivity/oligo_matches.tsv")
+            artifacts = tuple((output_dir / relative) for relative in report["artifacts"].values())
+            public_text = "\n".join(
+                [result.report_path.read_text(encoding="utf-8")]
+                + [path.read_text(encoding="utf-8") for path in artifacts]
+            )
+            self.assertNotIn(records[0].sequence, public_text)
+            self.assertNotIn(records[1].sequence, public_text)
+            self.assertNotIn("\r", public_text)
+
+    def test_enabled_empty_assays_publishes_four_header_only_tsvs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            result = evaluate_inclusivity(
+                records=(), evaluation_set=EvaluationSet(()),
+                primer_design=self._primer_result(assays=()),
+                config=InclusivityConfig(enabled=True), output_dir=output_dir,
+            )
+
+            self.assertEqual((result.oligo_matches, result.assay_results, result.variations, result.proposals), ((), (), (), ()))
+            expected_headers = {
+                "oligo_matches.tsv": (
+                    "assay_id", "sequence_id", "role", "orientation", "hit_rank",
+                    "source_start", "source_end", "expected_start", "expected_end",
+                    "displacement", "mismatch_positions", "mismatch_count", "exact_match",
+                    "three_prime_mismatch", "probe_mismatch", "compatible", "selected",
+                ),
+                "assay_inclusivity.tsv": (
+                    "assay_id", "sequence_id", "orientation", "geometry_found",
+                    "source_amplicon_start", "source_amplicon_end", "amplicon_size",
+                    "forward_hit_rank", "probe_hit_rank", "reverse_hit_rank",
+                    "original_forward_compatible", "original_probe_compatible",
+                    "original_reverse_compatible", "original_compatible",
+                    "proposed_forward_compatible", "proposed_probe_compatible",
+                    "proposed_reverse_compatible", "proposed_compatible",
+                ),
+                "oligo_variations.tsv": (
+                    "assay_id", "role", "oligo_position", "original_symbol",
+                    "original_support", "observed_symbol", "observed_support",
+                    "affected_sequence_ids", "affected_sequence_count", "affected_fraction",
+                    "primer_3_prime_position",
+                ),
+                "degeneracy_proposals.tsv": (
+                    "assay_id", "role", "original_sequence", "proposed_sequence", "status",
+                    "reason", "original_degeneracy", "proposed_degeneracy", "changed_positions",
+                    "binding_site_count", "original_exact_count", "original_exact_fraction",
+                    "proposed_exact_count", "proposed_exact_fraction",
+                ),
+            }
+            for path in (
+                result.oligo_matches_path, result.assay_inclusivity_path,
+                result.oligo_variations_path, result.degeneracy_proposals_path,
+            ):
+                self.assertEqual(path.read_bytes(), ("\t".join(expected_headers[path.name]) + "\n").encode())
+
+    def test_empty_evaluation_set_emits_no_site_proposals_with_nullable_fractions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            result = evaluate_inclusivity(
+                records=(), evaluation_set=EvaluationSet(()),
+                primer_design=self._primer_result(assays=(self._assay("a1"), self._assay("a2"))),
+                config=InclusivityConfig(enabled=True), output_dir=output_dir,
+            )
+
+            self.assertEqual(result.assay_results, ())
+            self.assertEqual(
+                [(proposal.assay_id, proposal.role, proposal.reason) for proposal in result.proposals],
+                [
+                    ("a1", "FORWARD", "NO_GEOMETRIC_SITES"), ("a1", "PROBE", "NO_GEOMETRIC_SITES"), ("a1", "REVERSE", "NO_GEOMETRIC_SITES"),
+                    ("a2", "FORWARD", "NO_GEOMETRIC_SITES"), ("a2", "PROBE", "NO_GEOMETRIC_SITES"), ("a2", "REVERSE", "NO_GEOMETRIC_SITES"),
+                ],
+            )
+            proposal_rows = result.degeneracy_proposals_path.read_text(encoding="utf-8").splitlines()
+            self.assertTrue(
+                all(
+                    row.split("\t")[11] == "" and row.split("\t")[13] == ""
+                    for row in proposal_rows[1:]
+                )
+            )
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+            self.assertTrue(all(row["original_exact_fraction"] is None for row in report["proposals"]))
+            self.assertTrue(all(row["proposed_exact_fraction"] is None for row in report["proposals"]))
+
+    def test_disabled_removes_only_exact_stale_data_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            artifact_dir = output_dir / "inclusivity"
+            artifact_dir.mkdir()
+            for name in (
+                "inclusivity_report.json", "oligo_matches.tsv", "assay_inclusivity.tsv",
+                "oligo_variations.tsv", "degeneracy_proposals.tsv",
+            ):
+                (artifact_dir / name).write_text("stale", encoding="utf-8")
+            sibling = artifact_dir / "unrelated.tmp"
+            sibling.write_text("keep", encoding="utf-8")
+
+            result = evaluate_inclusivity(
+                records=(object(),), evaluation_set=object(), primer_design=object(),
+                config=InclusivityConfig(enabled=False), output_dir=output_dir,
+            )
+
+            self.assertEqual({path.name for path in artifact_dir.iterdir()}, {"inclusivity_report.json", "unrelated.tmp"})
+            self.assertEqual(sibling.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(result.report_path.name, "inclusivity_report.json")
+
+    def test_enabled_validation_precedes_artifact_directory_creation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            with self.assertRaisesRegex(InclusivityError, "COMPLETE PrimerDesignResult"):
+                evaluate_inclusivity(
+                    records=(), evaluation_set=EvaluationSet(()),
+                    primer_design=self._primer_result(status="SKIPPED"),
+                    config=InclusivityConfig(enabled=True), output_dir=output_dir,
+                )
+            self.assertFalse((output_dir / "inclusivity").exists())
+
+    def test_enabled_publication_invalidates_report_before_data_and_writes_report_last(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            artifact_dir = output_dir / "inclusivity"
+            artifact_dir.mkdir()
+            report_path = artifact_dir / "inclusivity_report.json"
+            report_path.write_text("old", encoding="utf-8")
+            attempted: list[str] = []
+            original_replace = Path.replace
+
+            def recording_replace(source: Path, destination: Path):
+                attempted.append(destination.name)
+                if destination.name == "oligo_matches.tsv":
+                    self.assertFalse(report_path.exists())
+                return original_replace(source, destination)
+
+            with patch("qpcr_pipeline.inclusivity.Path.replace", new=recording_replace):
+                evaluate_inclusivity(
+                    records=(), evaluation_set=EvaluationSet(()),
+                    primer_design=self._primer_result(assays=()),
+                    config=InclusivityConfig(enabled=True), output_dir=output_dir,
+                )
+
+            self.assertEqual(attempted, [
+                "oligo_matches.tsv", "assay_inclusivity.tsv", "oligo_variations.tsv",
+                "degeneracy_proposals.tsv", "inclusivity_report.json",
+            ])
+
+    def test_replacement_failures_remove_old_report_and_temporary_siblings(self):
+        for failed_destination in (
+            "oligo_matches.tsv", "assay_inclusivity.tsv", "oligo_variations.tsv",
+            "degeneracy_proposals.tsv", "inclusivity_report.json",
+        ):
+            with self.subTest(failed_destination=failed_destination), tempfile.TemporaryDirectory() as temporary:
+                output_dir = Path(temporary)
+                artifact_dir = output_dir / "inclusivity"
+                artifact_dir.mkdir()
+                report_path = artifact_dir / "inclusivity_report.json"
+                report_path.write_text("old", encoding="utf-8")
+                attempted: list[str] = []
+                original_replace = Path.replace
+
+                def failing_replace(source: Path, destination: Path):
+                    attempted.append(destination.name)
+                    if destination.name == failed_destination:
+                        raise OSError("simulated replacement failure")
+                    return original_replace(source, destination)
+
+                with patch("qpcr_pipeline.inclusivity.Path.replace", new=failing_replace):
+                    with self.assertRaisesRegex(OSError, "simulated replacement failure"):
+                        evaluate_inclusivity(
+                            records=(), evaluation_set=EvaluationSet(()),
+                            primer_design=self._primer_result(assays=()),
+                            config=InclusivityConfig(enabled=True), output_dir=output_dir,
+                        )
+
+                self.assertIn(failed_destination, attempted)
+                self.assertFalse(report_path.exists())
+                self.assertFalse(tuple(artifact_dir.glob(".*.tmp")))
+                if failed_destination == "inclusivity_report.json":
+                    self.assertEqual(attempted[-1], "inclusivity_report.json")
 
 
 if __name__ == "__main__":
