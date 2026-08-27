@@ -1,13 +1,13 @@
 # Geison
 
-Pipeline para desenho e avaliacao in silico de ensaios qPCR/RT-qPCR.
+Pipeline para desenho e avaliação in silico de ensaios qPCR/RT-qPCR.
 
 O desenvolvimento ativo acontece na branch `develop`.
 
-## Clustering da Discovery Set
+## Clustering do Discovery Set
 
-O clustering e opcional e vem desabilitado por padrao. Quando habilitado, a
-configuracao pode incluir identidade, threads e memoria:
+O clustering é opcional e vem desabilitado por padrão. Quando habilitado, a
+configuração pode incluir identidade, threads e memória:
 
 ```yaml
 clustering:
@@ -18,27 +18,27 @@ clustering:
 ```
 
 `identity` aceita valores de `0.80` a `1.0`. O comprimento de palavra e o
-comprimento minimo efetivo sao derivados desse valor; com clustering habilitado,
-qualquer sequencia aprovada menor que o comprimento de palavra e rejeitada antes da
-execucao do `cd-hit-est`.
+comprimento mínimo efetivo são derivados desse valor; com clustering habilitado,
+qualquer sequência aprovada menor que o comprimento de palavra é rejeitada antes da
+execução do `cd-hit-est`.
 
-Execucoes com clustering habilitado exigem `cd-hit-est` no `PATH`. A Evaluation
-Set continua sendo toda a populacao aprovada pelo QC; a Discovery Set e apenas o
+Execuções com clustering habilitado exigem `cd-hit-est` no `PATH`. O Evaluation
+Set continua sendo toda a população aprovada pelo QC; o Discovery Set é apenas o
 subconjunto de representantes usado para etapas de descoberta.
 
-Os artefatos gerados no diretorio de saida sao:
+Os artefatos gerados no diretório de saída são:
 
-- `discovery_set.fasta`: sequencias representantes da Discovery Set.
-- `clustering_report.json`: configuracao, contagens, membros dos clusters e
+- `discovery_set.fasta`: sequências representantes do Discovery Set.
+- `clustering_report.json`: configuração, contagens, membros dos clusters e
   rastreabilidade entre Evaluation Set e Discovery Set.
-- `clustering/cd-hit-est.clstr`: saida bruta do CD-HIT, presente apenas quando o
-  clustering esta habilitado; uma nova execucao desabilitada remove esse artefato
-  obsoleto sem remover outros arquivos do diretorio `clustering/`.
+- `clustering/cd-hit-est.clstr`: saída bruta do CD-HIT, presente apenas quando o
+  clustering está habilitado; uma nova execução desabilitada remove esse artefato
+  obsoleto sem remover outros arquivos do diretório `clustering/`.
 
-## Alinhamento da Discovery Set
+## Alinhamento do Discovery Set
 
-O alinhamento e opcional e vem desabilitado por padrao. Quando habilitado, ele
-alinha somente os representantes da Discovery Set, apos o clustering, e pode ser
+O alinhamento é opcional e vem desabilitado por padrão. Quando habilitado, ele
+alinha somente os representantes do Discovery Set, após o clustering, e pode ser
 configurado assim:
 
 ```yaml
@@ -48,32 +48,33 @@ alignment:
   reference_id: seq-3
 ```
 
-`reference_id` e opcional. Quando informado, deve identificar uma sequencia da
-Discovery Set e essa sequencia e usada como referencia. Sem `reference_id`, a
-referencia e escolhida automaticamente pela menor fracao de bases ambiguas,
-depois pela maior sequencia e, em caso de empate, pela ordem da Discovery Set.
+`reference_id` é opcional. Quando informado, deve identificar uma sequência do
+Discovery Set, e essa sequência é usada como referência. Sem `reference_id`, a
+referência é escolhida automaticamente pela menor fração de bases ambíguas,
+depois pela maior sequência e, em caso de empate, pela ordem do Discovery Set.
 
-Execucoes com alinhamento habilitado e duas ou mais sequencias na Discovery Set
+Execuções com alinhamento habilitado e duas ou mais sequências no Discovery Set
 exigem `mafft` no `PATH`. O MAFFT recebe `--adjustdirectionaccurately`; quando
-ele identifica uma sequencia em orientacao reversa complementar, o resultado
-normalizado e publicado com o ID original e a orientacao registrada no relatorio.
+ele identifica uma sequência em orientação reversa complementar, o resultado
+normalizado é publicado com o ID original e a orientação registrada no relatório.
 
-Os artefatos de alinhamento sao:
+Os artefatos de alinhamento são:
 
-- `alignment/alignment_report.json`: configuracao, referencia, orientacoes,
+- `alignment/alignment_report.json`: configuração, referência, orientações,
   contagens e caminhos dos artefatos.
-- `alignment/discovery_alignment.fasta`: sequencias alinhadas, na ordem da
+- `alignment/discovery_alignment.fasta`: sequências alinhadas, na ordem do
   Discovery Set.
 - `alignment/coordinate_map.tsv`: mapa entre a coluna do alinhamento e a
-  coordenada/base da referencia.
+  coordenada/base da referência.
 
-`qc_report.json` tambem inclui `alignment` com status, ID de referencia e modo de
-selecao (`explicit` ou `automatic`) para rastreabilidade de alto nivel. Both
-coordinate columns are 1-based while reference gaps have blank reference fields.
+`qc_report.json` também inclui `alignment` com status, ID de referência e modo de
+seleção (`explicit` ou `automatic`) para rastreabilidade de alto nível. Ambas as
+colunas de coordenadas são 1-based; gaps na referência deixam vazios os campos de
+referência.
 
-## Conservacao genomica
+## Conservação genômica
 
-A analise de conservacao e opcional, vem desabilitada por padrao e depende de um
+A análise de conservação é opcional, vem desabilitada por padrão e depende de um
 alinhamento habilitado. A janela e o passo podem ser configurados assim:
 
 ```yaml
@@ -88,56 +89,56 @@ conservation:
 ```
 
 `window_size` e `step_size` aceitam inteiros de 1 a 1.000.000, com o passo menor
-ou igual a janela. A validacao ocorre antes da criacao do diretorio de saida.
+ou igual à janela. A validação ocorre antes da criação do diretório de saída.
 
-As metricas sao calculadas em todas as colunas do alinhamento da Discovery Set:
+As métricas são calculadas em todas as colunas do alinhamento do Discovery Set:
 
-- profundidade e o numero de sequencias sem gap na coluna;
-- cobertura e a profundidade dividida pelo numero de sequencias;
-- frequencia de gap e o numero de gaps dividido pelo numero de sequencias;
-- codigos IUPAC ambiguos distribuem um voto fracionario igualmente entre suas
-  bases A, C, G e T compativeis; gaps nao participam dessas frequencias;
-- conservacao e a frequencia do alelo majoritario;
-- entropia e a entropia de Shannon, em bits, das frequencias A/C/G/T;
-- o consenso majoritario prefere a base canonica da referencia em empates e,
+- profundidade é o número de sequências sem gap na coluna;
+- cobertura é a profundidade dividida pelo número de sequências;
+- frequência de gap é o número de gaps dividido pelo número de sequências;
+- códigos IUPAC ambíguos distribuem um voto fracionário igualmente entre suas
+  bases A, C, G e T compatíveis; gaps não participam dessas frequências;
+- conservação é a frequência do alelo majoritário;
+- entropia é a entropia de Shannon, em bits, das frequências A/C/G/T;
+- o consenso majoritário prefere a base canônica da referência em empates e,
   depois, a ordem A, C, G, T; o segundo consenso preserva o suporte por IUPAC.
 
-As colunas de insercao, nas quais a referencia tem gap, permanecem nas metricas
-por posicao com a coordenada de referencia vazia. Elas nao entram nos consensos
-nem nas janelas. As janelas usam coordenadas 1-based da referencia e registram a
-media e o minimo de conservacao, alem das medias de cobertura, gaps e entropia.
-Uma referencia menor que a janela produz uma unica janela parcial; referencias
-maiores recebem janelas completas e uma janela terminal ancorada quando necessario.
+As colunas de inserção, nas quais a referência tem gap, permanecem nas métricas
+por posição com a coordenada de referência vazia. Elas não entram nos consensos
+nem nas janelas. As janelas usam coordenadas 1-based da referência e registram a
+média e o mínimo de conservação, além das médias de cobertura, gaps e entropia.
+Uma referência menor que a janela produz uma única janela parcial; referências
+maiores recebem janelas completas e uma janela terminal ancorada quando necessário.
 
-Quando a referencia vem de GenBank, features locais validas sao convertidas para
-intervalos 1-based inclusivos e exibidas como anotacoes. Features `source`, partes
-externas e intervalos fora da referencia sao ignorados de forma rastreavel.
+Quando a referência vem de GenBank, features locais válidas são convertidas para
+intervalos 1-based inclusivos e exibidas como anotações. Features `source`, partes
+externas e intervalos fora da referência são ignorados de forma rastreável.
 
-Os artefatos publicados sao:
+Os artefatos publicados são:
 
-- `conservation/conservation_report.json`: configuracao, definicoes, contagens e
+- `conservation/conservation_report.json`: configuração, definições, contagens e
   caminhos dos artefatos;
-- `conservation/position_metrics.tsv`: metricas por coluna do alinhamento;
-- `conservation/window_metrics.tsv`: metricas agregadas por janela;
-- `conservation/consensus_major.fasta`: consenso majoritario sem insercoes da
-  referencia;
-- `conservation/consensus_iupac.fasta`: consenso IUPAC sem insercoes da referencia;
-- `report.html`: relatorio Canvas autocontido, sem CDN ou recursos de rede.
+- `conservation/position_metrics.tsv`: métricas por coluna do alinhamento;
+- `conservation/window_metrics.tsv`: métricas agregadas por janela;
+- `conservation/consensus_major.fasta`: consenso majoritário sem inserções da
+  referência;
+- `conservation/consensus_iupac.fasta`: consenso IUPAC sem inserções da referência;
+- `report.html`: relatório Canvas autocontido, sem CDN ou recursos de rede.
 
-O relatorio permite zoom pela roda do mouse, pan por arraste, restauracao da visao
+O relatório permite zoom pela roda do mouse, pan por arraste, restauração da visão
 completa, detalhes por hover e zoom ao clicar nas janelas mais conservadas. Esta
 etapa apenas calcula e visualiza os picos.
 
-Com conservacao desabilitada, apenas
-`conservation/conservation_report.json` e publicado com status `SKIPPED`; dados
-cientificos e `report.html` nao sao gerados. `qc_report.json` sempre inclui o
-status, a referencia e as contagens de posicoes e janelas da etapa.
+Com conservação desabilitada, apenas
+`conservation/conservation_report.json` é publicado com status `SKIPPED`; dados
+científicos e `report.html` não são gerados. `qc_report.json` sempre inclui o
+status, a referência e as contagens de posições e janelas da etapa.
 
 ## Desenho de ensaios com Primer3
 
-O desenho de primers e sondas e opcional, vem desabilitado por padrao e depende
-de alinhamento e conservacao habilitados. A forma YAML completa da secao, com
-seus valores padrao, e:
+O desenho de primers e sondas é opcional, vem desabilitado por padrão e depende
+de alinhamento e conservação habilitados. A forma YAML completa da seção, com
+seus valores padrão, é:
 
 ```yaml
 primer_design:
@@ -174,51 +175,51 @@ primer_design:
     max_gc_percent: 80.0
 ```
 
-Cada janela de conservacao elegivel e expandida para
-`candidate_region_length`; nas extremidades, o intervalo e deslocado para caber
-na referencia, e uma referencia menor usa seu comprimento total. Intervalos
-iguais sao deduplicados. Os candidatos sao ordenados por maior conservacao
-media, maior conservacao minima, maior cobertura media, menor entropia media,
-menor frequencia media de gaps, maior comprimento utilizavel e, por fim,
-coordenadas iniciais e finais menores. Depois de aceitar um candidato, outro so
-e aceito quando o comprimento de sua intersecao dividido pelo comprimento do
-menor dos dois intervalos e menor ou igual a
+Cada janela de conservação elegível é expandida para
+`candidate_region_length`; nas extremidades, o intervalo é deslocado para caber
+na referência, e uma referência menor usa seu comprimento total. Intervalos
+iguais são deduplicados. Os candidatos são ordenados por maior conservação
+média, maior conservação mínima, maior cobertura média, menor entropia média,
+menor frequência média de gaps, maior comprimento utilizável e, por fim,
+coordenadas iniciais e finais menores. Depois de aceitar um candidato, outro só
+é aceito quando o comprimento de sua interseção dividido pelo comprimento do
+menor dos dois intervalos é menor ou igual a
 `max_region_overlap_fraction`. Os IDs `region-001`, `region-002`, etc. seguem
 essa ordem.
 
-Quando existe ao menos uma regiao candidata, a execucao exige o executavel
-`primer3_core` no `PATH`. O consenso majoritario completo e enviado em cada
+Quando existe ao menos uma região candidata, a execução exige o executável
+`primer3_core` no `PATH`. O consenso majoritário completo é enviado em cada
 `SEQUENCE_TEMPLATE`, enquanto `SEQUENCE_INCLUDED_REGION` limita o desenho ao
 candidato. Os artefatos ficam em `primer_design/`:
 
-- `primer_design_report.json`: configuracao efetiva, contagens, diagnosticos do
+- `primer_design_report.json`: configuração efetiva, contagens, diagnósticos do
   Primer3, ensaios e caminhos dos artefatos;
-- `candidate_regions.tsv`: regioes candidatas ordenadas e suas metricas;
+- `candidate_regions.tsv`: regiões candidatas ordenadas e suas métricas;
 - `assays.tsv`: pares completos de primer forward, sonda interna e primer
   reverse;
 - `primer3_input.txt` e `primer3_output.txt`: Boulder-IO enviado e recebido para
-  auditoria, presentes somente quando o Primer3 e executado.
+  auditoria, presentes somente quando o Primer3 é executado.
 
-Todas as coordenadas publicadas nos TSV e JSON sao 1-based e inclusivas, tanto
+Todas as coordenadas publicadas nos TSV e JSON são 1-based e inclusivas, tanto
 para candidatos quanto para primers e sondas. O tamanho do produto corresponde
-a `reverse_reference_end - forward_reference_start + 1`. O Boulder-IO bruto e
-preservado sem conversao nos dois artefatos de auditoria.
+a `reverse_reference_end - forward_reference_start + 1`. O Boulder-IO bruto é
+preservado sem conversão nos dois artefatos de auditoria.
 
 Com `primer_design.enabled: false`, somente
-`primer_design/primer_design_report.json` e publicado para a etapa, com status
-`SKIPPED`; o runner nao e invocado. Com a etapa habilitada mas sem regioes
-elegiveis, o status e `COMPLETE`, `candidate_regions.tsv` e `assays.tsv` contem
-somente os cabecalhos, e o Primer3 nao e executado. Se o Primer3 nao retornar
-pares completos, `assays.tsv` fica apenas com o cabecalho e a entrada, a saida e
-os diagnosticos continuam preservados. `qc_report.json` inclui o status, a
-referencia e as contagens de candidatos e ensaios.
+`primer_design/primer_design_report.json` é publicado para a etapa, com status
+`SKIPPED`; o runner não é invocado. Com a etapa habilitada mas sem regiões
+elegíveis, o status é `COMPLETE`, `candidate_regions.tsv` e `assays.tsv` contêm
+somente os cabeçalhos, e o Primer3 não é executado. Se o Primer3 não retornar
+pares completos, `assays.tsv` fica apenas com o cabeçalho e a entrada, a saída e
+os diagnósticos continuam preservados. `qc_report.json` inclui o status, a
+referência e as contagens de candidatos e ensaios.
 
-Esta etapa produz candidatos de ensaio auditaveis.
+Esta etapa produz candidatos de ensaio auditáveis.
 
 ## Inclusividade e propostas IUPAC
 
-A avaliacao de inclusividade e opcional, vem desabilitada por padrao e depende
-do desenho de ensaios habilitado. A configuracao efetiva completa e:
+A avaliação de inclusividade é opcional, vem desabilitada por padrão e depende
+do desenho de ensaios habilitado. A configuração efetiva completa é:
 
 ```yaml
 inclusivity:
@@ -235,38 +236,38 @@ inclusivity:
   max_amplicon_size_delta: 20
 ```
 
-Cada ensaio do Primer3 e avaliado contra todas as sequencias aprovadas do
-Evaluation Set, inclusive membros que nao foram escolhidos como representantes
-da Discovery Set. Cada sequencia e pesquisada tanto na orientacao fornecida como
-na sua reversa complementar. Oligos IUPAC usam uma comparacao conservadora: uma
-base alvo ambigua so e considerada coberta quando todas as suas bases possiveis
-estao no suporte do simbolo do oligo.
+Cada ensaio do Primer3 é avaliado contra todas as sequências aprovadas do
+Evaluation Set, inclusive membros que não foram escolhidos como representantes
+do Discovery Set. Cada sequência é pesquisada tanto na orientação fornecida como
+na sua reversa complementar. Oligos IUPAC usam uma comparação conservadora: uma
+base-alvo ambígua só é considerada coberta quando todas as suas bases possíveis
+estão no suporte do símbolo do oligo.
 
-As posicoes de mismatch sao 1-based na orientacao de sintese 5-prime para
-3-prime do oligo, inclusive para o primer reverse. Por padrao, qualquer mismatch
-nos cinco nucleotideos da extremidade 3-prime de um primer torna esse hit
-incompativel. A compatibilidade completa exige a geometria estrita
+As posições de mismatch são 1-based na orientação de síntese 5-prime para
+3-prime do oligo, inclusive para o primer reverse. Por padrão, qualquer mismatch
+nos cinco nucleotídeos da extremidade 3-prime de um primer torna esse hit
+incompatível. A compatibilidade completa exige a geometria estrita
 forward < probe < reverse e um tamanho de amplicon dentro de
 `max_amplicon_size_delta` do tamanho projetado.
 
-Quando uma variacao observada melhora a cobertura exata e respeita os limites de
-degenerescencia, o pipeline publica uma proposta IUPAC limitada. O ensaio
-original permanece imutavel e e avaliado lado a lado com a proposta; nenhuma
+Quando uma variação observada melhora a cobertura exata e respeita os limites de
+degenerescência, o pipeline publica uma proposta IUPAC limitada. O ensaio
+original permanece imutável e é avaliado lado a lado com a proposta; nenhuma
 proposta substitui silenciosamente o oligo original. Os artefatos ficam em
 `inclusivity/`:
 
 - `oligo_matches.tsv`: hits locais e detalhes de mismatch por oligo.
 - `assay_inclusivity.tsv`: geometria e compatibilidade original/proposta por
-  ensaio e sequencia.
-- `oligo_variations.tsv`: variacoes posicionais observadas na Evaluation Set.
-- `degeneracy_proposals.tsv`: sequencias originais, propostas, limites e motivos.
-- `inclusivity_report.json`: relatorio normalizado que referencia os quatro TSVs.
+  ensaio e sequência.
+- `oligo_variations.tsv`: variações posicionais observadas no Evaluation Set.
+- `degeneracy_proposals.tsv`: sequências originais, propostas, limites e motivos.
+- `inclusivity_report.json`: relatório normalizado que referencia os quatro TSVs.
 
-As propostas IUPAC sao candidatas computacionais para auditoria. Elas nao
-substituem validacao experimental, nem estimam sozinhas consequencias
-termodinamicas ou risco biologico.
+As propostas IUPAC são candidatas computacionais para auditoria. Elas não
+substituem validação experimental, nem estimam sozinhas consequências
+termodinâmicas ou risco biológico.
 
 A issue #8 avalia inclusividade contra todo o Evaluation Set. A issue #9 avalia
 especificidade contra conjuntos off-target; propostas IUPAC nunca substituem
-silenciosamente os oligos originais. A decisao final de risco e a interface de
-usuario pertencem a etapas posteriores.
+silenciosamente os oligos originais. A decisão final de risco e a interface de
+usuário pertencem a etapas posteriores.
