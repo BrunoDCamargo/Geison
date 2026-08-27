@@ -21,7 +21,8 @@ jobs:
               tests/test_specificity_config.py \
               tests/test_specificity_matching.py \
               tests/test_specificity_geometry.py \
-              tests/test_specificity_artifacts.py
+              tests/test_specificity_artifacts.py \
+              tests/test_pipeline_specificity.py
 
 workflows:
   ci:
