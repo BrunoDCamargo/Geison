@@ -215,8 +215,8 @@ class PipelineSpecificityTests(unittest.TestCase):
             ("ARGT", "AAGT", 0, True),
             ("ARGT", "AGGT", 0, True),
             ("ARGT", "ANGT", 0, False),
-            ("ACGT", "ATGT", 1, True),
-            ("ACGT", "ACGA", 1, False),
+            ("AAGC", "ATGC", 1, True),
+            ("AAGC", "AAGA", 1, False),
         )
         for oligo, target, max_mismatches, expected in cases:
             with self.subTest(
