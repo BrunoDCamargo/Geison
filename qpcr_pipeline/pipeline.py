@@ -13,6 +13,7 @@ from qpcr_pipeline.alignment import MafftRunner, align_discovery
 from qpcr_pipeline.clustering import CdHitRunner, cluster_sequences
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
 from qpcr_pipeline.conservation import analyze_conservation
+from qpcr_pipeline.inclusivity import evaluate_inclusivity
 from qpcr_pipeline.local_input import load_genbank, load_local_sequences
 from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen_dataset
 from qpcr_pipeline.primer3 import Primer3Runner
@@ -108,6 +109,13 @@ def run_pipeline(
         output_dir,
         runner=primer3_runner,
     )
+    inclusivity = evaluate_inclusivity(
+        approved_records,
+        result.evaluation_set,
+        primer_design,
+        config.inclusivity,
+        output_dir,
+    )
 
     summary = RunSummary(
         status="COMPLETED",
@@ -144,6 +152,22 @@ def run_pipeline(
             "reference_id": primer_design.reference_id,
             "candidate_region_count": len(primer_design.candidates),
             "assay_count": len(primer_design.assays),
+        },
+        "inclusivity": {
+            "status": inclusivity.status,
+            "evaluation_sequence_count": len(inclusivity.evaluation_sequence_ids),
+            "assay_count": (
+                len(primer_design.assays)
+                if inclusivity.status == "COMPLETE"
+                else 0
+            ),
+            "assay_evaluation_count": len(inclusivity.assay_results),
+            "original_compatible_count": sum(
+                assay.original_compatible for assay in inclusivity.assay_results
+            ),
+            "proposed_compatible_count": sum(
+                assay.proposed_compatible for assay in inclusivity.assay_results
+            ),
         },
     }
 

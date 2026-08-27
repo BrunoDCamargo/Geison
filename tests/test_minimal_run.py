@@ -16,6 +16,7 @@ from qpcr_pipeline.config import (
     AlignmentConfig,
     ClusteringConfig,
     ConservationConfig,
+    InclusivityConfig,
     NcbiInputConfig,
     PipelineConfig,
     PrimerDesignConfig,
@@ -485,6 +486,116 @@ class MinimalPipelineRunTests(unittest.TestCase):
             "candidate_region_count": 1,
             "assay_count": 2,
         })
+        self.assertEqual(qc_report["inclusivity"], {
+            "status": "SKIPPED",
+            "evaluation_sequence_count": 0,
+            "assay_count": 0,
+            "assay_evaluation_count": 0,
+            "original_compatible_count": 0,
+            "proposed_compatible_count": 0,
+        })
+
+    def test_enabled_inclusivity_evaluates_full_evaluation_set_beyond_discovery(self):
+        class FakeCdHitRunner:
+            def run(self, input_path, output_path, config):
+                del config
+                with Path(input_path).open(encoding="utf-8") as handle:
+                    records = {record.id: record for record in SeqIO.parse(handle, "fasta")}
+                SeqIO.write(
+                    [records["geison-00000000"], records["geison-00000001"]],
+                    output_path,
+                    "fasta",
+                )
+                Path(str(output_path) + ".clstr").write_text(
+                    ">Cluster 0\n"
+                    "0 100nt, >geison-00000000... *\n"
+                    "1 100nt, >geison-00000002... at +/99.00%\n"
+                    ">Cluster 1\n"
+                    "0 100nt, >geison-00000001... *\n",
+                    encoding="utf-8",
+                )
+
+        class FakeMafftRunner:
+            def run(self, input_path, output_path, config):
+                del config
+                shutil.copyfile(input_path, output_path)
+
+        class FakePrimer3Runner:
+            def run(self, input_text):
+                del input_text
+                return (
+                    "SEQUENCE_ID=region-001\n"
+                    "PRIMER_LEFT_NUM_RETURNED=1\n"
+                    "PRIMER_INTERNAL_NUM_RETURNED=1\n"
+                    "PRIMER_RIGHT_NUM_RETURNED=1\n"
+                    "PRIMER_PAIR_NUM_RETURNED=1\n"
+                    "PRIMER_LEFT_0=10,20\n"
+                    "PRIMER_LEFT_0_SEQUENCE=AAAAAAAAAAAAAAAAAAAA\n"
+                    "PRIMER_LEFT_0_TM=60.0\n"
+                    "PRIMER_LEFT_0_GC_PERCENT=50.0\n"
+                    "PRIMER_INTERNAL_0=35,25\n"
+                    "PRIMER_INTERNAL_0_SEQUENCE=CCCCCCCCCCCCCCCCCCCCCCCCC\n"
+                    "PRIMER_INTERNAL_0_TM=70.0\n"
+                    "PRIMER_INTERNAL_0_GC_PERCENT=48.0\n"
+                    "PRIMER_RIGHT_0=89,20\n"
+                    "PRIMER_RIGHT_0_SEQUENCE=GGGGGGGGGGGGGGGGGGGG\n"
+                    "PRIMER_RIGHT_0_TM=60.0\n"
+                    "PRIMER_RIGHT_0_GC_PERCENT=50.0\n"
+                    "PRIMER_PAIR_0_PRODUCT_SIZE=80\n"
+                    "=\n"
+                )
+
+        sequence = "T" * 10 + "A" * 20 + "T" * 5 + "C" * 25 + "T" * 10 + "C" * 20 + "T" * 10
+        second_sequence = "G" + sequence[1:]
+        varied_sequence = "C" + sequence[1:14] + "G" + sequence[15:]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            fasta_path = tmp_path / "target.fasta"
+            outdir = tmp_path / "run"
+            fasta_path.write_text(
+                f">s1\n{sequence}\n>s2\n{second_sequence}\n>s3\n{varied_sequence}\n",
+                encoding="utf-8",
+            )
+
+            run_pipeline(
+                PipelineConfig(
+                    target_name="synthetic-target",
+                    input_fasta=fasta_path,
+                    clustering=ClusteringConfig(enabled=True),
+                    alignment=AlignmentConfig(enabled=True, reference_id="s1"),
+                    conservation=ConservationConfig(
+                        enabled=True, window_size=100, step_size=100
+                    ),
+                    primer_design=PrimerDesignConfig(
+                        enabled=True,
+                        max_candidate_regions=1,
+                        assays_per_region=1,
+                        min_minimum_conservation=0.5,
+                    ),
+                    inclusivity=InclusivityConfig(enabled=True, search_flank=0),
+                ),
+                outdir,
+                cdhit_runner=FakeCdHitRunner(),
+                mafft_runner=FakeMafftRunner(),
+                primer3_runner=FakePrimer3Runner(),
+            )
+
+            qc = json.loads((outdir / "qc_report.json").read_text(encoding="utf-8"))
+            report = json.loads(
+                (outdir / "inclusivity" / "inclusivity_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertTrue(report["variations"], report)
+        variation = next(item for item in report["variations"] if item["role"] == "FORWARD")
+        proposal = next(item for item in report["proposals"] if item["role"] == "FORWARD")
+        self.assertEqual(report["evaluation_sequence_ids"], ["s1", "s2", "s3"])
+        self.assertEqual(qc["inclusivity"]["evaluation_sequence_count"], 3)
+        self.assertEqual(qc["inclusivity"]["assay_evaluation_count"], 3)
+        self.assertIn("s3", variation["affected_sequence_ids"])
+        self.assertEqual(proposal["status"], "ACCEPTED")
+        self.assertNotEqual(proposal["original_sequence"], proposal["proposed_sequence"])
 
     def test_disabled_local_clustering_does_not_call_runner_and_keeps_evaluation_set(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -674,6 +785,20 @@ class MinimalPipelineRunTests(unittest.TestCase):
 
             self.assertFalse(outdir.exists())
 
+    def test_run_rejects_enabled_inclusivity_without_primer_design_before_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "run"
+            config = PipelineConfig(
+                target_name="inclusivity-without-primer-design",
+                input_fasta=FIXTURE_FASTA,
+                inclusivity=InclusivityConfig(enabled=True),
+            )
+
+            with self.assertRaisesRegex(ValueError, "requires enabled primer design"):
+                run_pipeline(config, outdir)
+
+            self.assertFalse(outdir.exists())
+
     def test_disabled_primer_design_publishes_only_skipped_report_without_runner(self):
         class FailingPrimer3Runner:
             def __init__(self):
@@ -698,6 +823,9 @@ class MinimalPipelineRunTests(unittest.TestCase):
             primer_design_files = {
                 path.name for path in (outdir / "primer_design").iterdir()
             }
+            inclusivity_files = {
+                path.name for path in (outdir / "inclusivity").iterdir()
+            }
             primer_design_report = json.loads(
                 (outdir / "primer_design" / "primer_design_report.json").read_text(
                     encoding="utf-8"
@@ -709,12 +837,21 @@ class MinimalPipelineRunTests(unittest.TestCase):
 
         self.assertEqual(runner.calls, [])
         self.assertEqual(primer_design_files, {"primer_design_report.json"})
+        self.assertEqual(inclusivity_files, {"inclusivity_report.json"})
         self.assertEqual(primer_design_report["status"], "SKIPPED")
         self.assertEqual(qc_report["primer_design"], {
             "status": "SKIPPED",
             "reference_id": None,
             "candidate_region_count": 0,
             "assay_count": 0,
+        })
+        self.assertEqual(qc_report["inclusivity"], {
+            "status": "SKIPPED",
+            "evaluation_sequence_count": 0,
+            "assay_count": 0,
+            "assay_evaluation_count": 0,
+            "original_compatible_count": 0,
+            "proposed_compatible_count": 0,
         })
 
     def test_run_rejects_invalid_conservation_before_output_or_analysis(self):

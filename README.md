@@ -213,7 +213,60 @@ pares completos, `assays.tsv` fica apenas com o cabecalho e a entrada, a saida e
 os diagnosticos continuam preservados. `qc_report.json` inclui o status, a
 referencia e as contagens de candidatos e ensaios.
 
-Esta etapa produz candidatos de ensaio auditaveis. A avaliacao de inclusividade
-contra a Discovery Set pertence a issue #8, e a avaliacao de especificidade
-contra a Evaluation Set pertence a issue #9. A decisao final de risco e a
-interface de usuario pertencem a etapas posteriores.
+Esta etapa produz candidatos de ensaio auditaveis.
+
+## Inclusividade e propostas IUPAC
+
+A avaliacao de inclusividade e opcional, vem desabilitada por padrao e depende
+do desenho de ensaios habilitado. A configuracao efetiva completa e:
+
+```yaml
+inclusivity:
+  enabled: false
+  search_flank: 250
+  max_hits_per_oligo: 20
+  max_primer_mismatches: 2
+  max_probe_mismatches: 1
+  reject_primer_3_prime_mismatch: true
+  primer_3_prime_bases: 5
+  max_primer_degeneracy: 16
+  max_probe_degeneracy: 4
+  allow_primer_3_prime_degeneracy: false
+  max_amplicon_size_delta: 20
+```
+
+Cada ensaio do Primer3 e avaliado contra todas as sequencias aprovadas do
+Evaluation Set, inclusive membros que nao foram escolhidos como representantes
+da Discovery Set. Cada sequencia e pesquisada tanto na orientacao fornecida como
+na sua reversa complementar. Oligos IUPAC usam uma comparacao conservadora: uma
+base alvo ambigua so e considerada coberta quando todas as suas bases possiveis
+estao no suporte do simbolo do oligo.
+
+As posicoes de mismatch sao 1-based na orientacao de sintese 5-prime para
+3-prime do oligo, inclusive para o primer reverse. Por padrao, qualquer mismatch
+nos cinco nucleotideos da extremidade 3-prime de um primer torna esse hit
+incompativel. A compatibilidade completa exige a geometria estrita
+forward < probe < reverse e um tamanho de amplicon dentro de
+`max_amplicon_size_delta` do tamanho projetado.
+
+Quando uma variacao observada melhora a cobertura exata e respeita os limites de
+degenerescencia, o pipeline publica uma proposta IUPAC limitada. O ensaio
+original permanece imutavel e e avaliado lado a lado com a proposta; nenhuma
+proposta substitui silenciosamente o oligo original. Os artefatos ficam em
+`inclusivity/`:
+
+- `oligo_matches.tsv`: hits locais e detalhes de mismatch por oligo.
+- `assay_inclusivity.tsv`: geometria e compatibilidade original/proposta por
+  ensaio e sequencia.
+- `oligo_variations.tsv`: variacoes posicionais observadas na Evaluation Set.
+- `degeneracy_proposals.tsv`: sequencias originais, propostas, limites e motivos.
+- `inclusivity_report.json`: relatorio normalizado que referencia os quatro TSVs.
+
+As propostas IUPAC sao candidatas computacionais para auditoria. Elas nao
+substituem validacao experimental, nem estimam sozinhas consequencias
+termodinamicas ou risco biologico.
+
+A issue #8 avalia inclusividade contra todo o Evaluation Set. A issue #9 avalia
+especificidade contra conjuntos off-target; propostas IUPAC nunca substituem
+silenciosamente os oligos originais. A decisao final de risco e a interface de
+usuario pertencem a etapas posteriores.
