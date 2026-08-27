@@ -7,23 +7,43 @@ jobs:
     resource_class: small
     steps:
       - checkout
+
       - run:
           name: Install Python project and test runner
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
+
       - run:
-          name: Run issue 9 test suite
-          command: |
-            python -m pytest -q \
-              tests/test_specificity_config.py \
-              tests/test_specificity_matching.py \
-              tests/test_specificity_geometry.py \
-              tests/test_specificity_artifacts.py \
-              tests/test_pipeline_specificity.py
+          name: Run normal test suite
+          command: python -m pytest -q
+
+      - when:
+          condition:
+            equal: [main, << pipeline.git.branch >>]
+          steps:
+            - run:
+                name: Install integration tools
+                command: |
+                  sudo apt-get update
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                    cd-hit \
+                    mafft \
+                    primer3
+
+            - run:
+                name: Verify integration tools
+                command: |
+                  command -v cd-hit-est
+                  command -v mafft
+                  command -v primer3_core
+
+            - run:
+                name: Run integration test suite
+                command: python -m unittest discover -s integration_tests -q
 
 workflows:
   ci:
     jobs:
       - test:
-          filters: pipeline.git.branch == "feature/issue-9-specificity"
+          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
