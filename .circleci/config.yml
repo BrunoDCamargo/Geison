@@ -20,7 +20,8 @@ jobs:
             python -m pytest -q \
               tests/test_specificity_config.py \
               tests/test_specificity_matching.py \
-              tests/test_specificity_geometry.py
+              tests/test_specificity_geometry.py \
+              tests/test_specificity_artifacts.py
 
 workflows:
   ci:
