@@ -77,13 +77,9 @@ class RankingConfig:
     min_inclusivity_for_pass: float = 1.0
     min_inclusivity_before_high_risk: float = 0.90
     weights: RankingWeights = field(default_factory=RankingWeights)
-
-
-def validate_ranking_config(config: RankingConfig) -> None:
-    pass
 ```
 
-`PipelineConfig` gains `ranking: RankingConfig = field(default_factory=RankingConfig)`.
+Produces `validate_ranking_config(config: RankingConfig) -> None`. `PipelineConfig` gains `ranking: RankingConfig = field(default_factory=RankingConfig)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -230,58 +226,21 @@ class ClassifiedAssay:
     inclusivity_available: bool
     specificity_available: bool
     missing_components: tuple[str, ...]
-
-
-def classify_assays(
-    primer_design: PrimerDesignResult,
-    inclusivity: InclusivityResult,
-    specificity: SpecificityResult,
-    config: RankingConfig,
-) -> tuple[ClassifiedAssay, ...]:
-    """Validate evidence, create reasons, and finalize class without scoring."""
 ```
+
+Produces `classify_assays(primer_design: PrimerDesignResult, inclusivity: InclusivityResult, specificity: SpecificityResult, config: RankingConfig) -> tuple[ClassifiedAssay, ...]`. This function validates evidence, creates reasons, and finalizes class without calculating a score.
 
 - [ ] **Step 1: Add deterministic valid fixtures**
 
 Create `tests/ranking_fixtures.py` with builders for:
 
-```python
-def make_region(region_id: str = "r1") -> CandidateRegion
-
-def make_oligo(sequence: str, start: int) -> DesignedOligo
-
-def make_assay(
-    assay_id: str = "a1",
-    *,
-    region_id: str = "r1",
-    primer3_index: int = 0,
-    pair_penalty: float | None = 1.0,
-) -> AssayCandidate
-
-def make_primer_result(
-    assays: tuple[AssayCandidate, ...] | None = None,
-    candidates: tuple[CandidateRegion, ...] | None = None,
-    *,
-    status: str = "COMPLETE",
-) -> PrimerDesignResult
-
-def make_inclusivity_result(
-    primer: PrimerDesignResult,
-    compatibility: dict[str, tuple[bool, ...]] | None = None,
-    *,
-    sequence_ids: tuple[str, ...] = ("s1",),
-    proposals: tuple[DegeneracyProposal, ...] = (),
-    status: str = "COMPLETE",
-) -> InclusivityResult
-
-def make_specificity_result(
-    primer: PrimerDesignResult,
-    *,
-    dataset_names: tuple[str, ...] = ("off",),
-    hit_totals: dict[tuple[str, str, str], int] | None = None,
-    amplicons: tuple[PlausibleAmplicon, ...] = (),
-    status: str = "COMPLETE",
-) -> SpecificityResult
+```text
+make_region(region_id="r1") -> CandidateRegion
+make_oligo(sequence, start) -> DesignedOligo
+make_assay(assay_id="a1", region_id="r1", primer3_index=0, pair_penalty=1.0) -> AssayCandidate
+make_primer_result(assays=None, candidates=None, status="COMPLETE") -> PrimerDesignResult
+make_inclusivity_result(primer, compatibility=None, sequence_ids=("s1",), proposals=(), status="COMPLETE") -> InclusivityResult
+make_specificity_result(primer, dataset_names=("off",), hit_totals=None, amplicons=(), status="COMPLETE") -> SpecificityResult
 ```
 
 `make_region()` uses perfect fractions, zero gaps, zero entropy. `make_specificity_result()` creates exactly one retention row for every configured dataset × assay × role in `FORWARD`, `PROBE`, `REVERSE`; `total_hit_count` comes from `hit_totals` and `retained_hit_count=min(total_hit_count, 20)`.
@@ -401,9 +360,11 @@ else:
 
 No score function is called in this task.
 
-- [ ] **Step 6: Add malformed-evidence regression tests**
+- [ ] **Step 6: Add malformed-evidence and determinism regression tests**
 
 Add concrete cases for duplicate assay ID, missing candidate region, missing/duplicate inclusivity matrix row, unknown assay in `oligo_matches`, unknown assay in `variations`, duplicate proposal `(assay_id, role)`, mismatched specificity `assay_count`, missing/duplicate retention row, unknown assay in specificity hits, and unknown assay in amplicons. Every case must raise `RankingError`.
+
+Run equivalent valid inputs with proposal/evidence tuples in different input orders and assert the final ordered `(severity, source, code)` reason tuples are identical. This verifies deterministic reason ordering rather than relying on construction order.
 
 - [ ] **Step 7: Verify GREEN**
 
@@ -461,17 +422,9 @@ class RankedAssay:
     plausible_off_target_count: int | None
     detectable_off_target_count: int | None
     pair_penalty: float | None
-
-
-def rank_assays(
-    primer_design: PrimerDesignResult,
-    inclusivity: InclusivityResult,
-    specificity: SpecificityResult,
-    config: RankingConfig,
-) -> tuple[RankedAssay, ...]:
-    classified = classify_assays(primer_design, inclusivity, specificity, config)
-    # scoring and sorting happen only after the line above returns
 ```
+
+Produces `rank_assays(primer_design: PrimerDesignResult, inclusivity: InclusivityResult, specificity: SpecificityResult, config: RankingConfig) -> tuple[RankedAssay, ...]`. Its first phase calls `classify_assays(...)`; component calculation and sorting happen only after classification returns.
 
 - [ ] **Step 1: Write RED score-formula tests**
 
@@ -503,11 +456,11 @@ The `25` case must use `HitRetentionSummary.total_hit_count=25` even when `retai
 
 Assert `pair_penalty=None` gives:
 
-```python
-score_status == "INCOMPLETE"
+```text
+score_status == INCOMPLETE
 final_score is None
-classification == "REVIEW"
-"EVIDENCE_INCOMPLETE" in reason codes
+classification == REVIEW
+EVIDENCE_INCOMPLETE is present
 ```
 
 Repeat with `primer3_quality` weight set to zero while the other weights still sum to one; the score remains incomplete. Use a complete inclusivity result with an empty Evaluation Set and assert inclusivity/robustness components are `None`, no division by zero occurs, and final score is incomplete.
@@ -522,35 +475,14 @@ Expected: missing score models/functions or failed component assertions.
 
 - [ ] **Step 4: Implement exact component formulas**
 
-Use:
+Inclusivity is `original_compatible_count / evaluation_sequence_count` when the denominator is nonzero, otherwise `None`.
+
+Specificity is `None` when specificity is unavailable; otherwise use exactly `0.0` for any detectable off-target, `0.40` for any plausible amplicon without detectable probe, `max(0.80, 1.0 - 0.02 * compatible_hit_count)` for isolated hits, and `1.0` for zero compatible hits.
+
+Conservation is:
 
 ```python
-inclusivity = (
-    None
-    if item.evaluation_sequence_count in (None, 0)
-    else item.original_compatible_count / item.evaluation_sequence_count
-)
-```
-
-Specificity:
-
-```python
-if not item.specificity_available:
-    specificity = None
-elif item.detectable_off_target_count:
-    specificity = 0.0
-elif item.plausible_off_target_count:
-    specificity = 0.40
-elif item.compatible_off_target_hit_count:
-    specificity = max(0.80, 1.0 - 0.02 * item.compatible_off_target_hit_count)
-else:
-    specificity = 1.0
-```
-
-Conservation:
-
-```python
-conservation = (
+(
     item.region.mean_conservation
     + item.region.minimum_conservation
     + item.region.mean_coverage
@@ -559,40 +491,24 @@ conservation = (
 ) / 5.0
 ```
 
-Primer3 quality:
+Primer3 quality is `None` for missing pair penalty, otherwise `1.0 / (1.0 + pair_penalty)`.
 
-```python
-primer3_quality = (
-    None if item.assay.pair_penalty is None else 1.0 / (1.0 + item.assay.pair_penalty)
-)
-```
-
-Robustness: for each role in `FORWARD`, `PROBE`, `REVERSE`, use `1.0` unless that role has an accepted proposal; accepted proposal score is `original_degeneracy / proposed_degeneracy`; robustness is the arithmetic mean of the three role scores. If inclusivity is unavailable or Evaluation Set is empty, robustness is `None`.
+Robustness uses `1.0` for every role without an accepted proposal and `original_degeneracy / proposed_degeneracy` for an accepted proposal; take the arithmetic mean across forward/probe/reverse. If inclusivity is unavailable or its Evaluation Set is empty, robustness is `None`.
 
 Validate present candidate fractions as finite values in `[0, 1]`, entropy as finite and non-negative, pair penalty as finite and non-negative, and accepted degeneracies as positive with proposed degeneracy not lower than original. Invalid present values raise `RankingError`.
 
 - [ ] **Step 5: Compute final score only when all five components exist**
 
+When any component is `None`, set `score_status="INCOMPLETE"` and `final_score=None`. Otherwise calculate full-precision:
+
 ```python
-values = (
-    components.inclusivity,
-    components.specificity,
-    components.conservation,
-    components.primer3_quality,
-    components.robustness,
+100.0 * (
+    config.weights.inclusivity * components.inclusivity
+    + config.weights.specificity * components.specificity
+    + config.weights.conservation * components.conservation
+    + config.weights.primer3_quality * components.primer3_quality
+    + config.weights.robustness * components.robustness
 )
-if any(value is None for value in values):
-    score_status = "INCOMPLETE"
-    final_score = None
-else:
-    score_status = "COMPLETE"
-    final_score = 100.0 * (
-        config.weights.inclusivity * components.inclusivity
-        + config.weights.specificity * components.specificity
-        + config.weights.conservation * components.conservation
-        + config.weights.primer3_quality * components.primer3_quality
-        + config.weights.robustness * components.robustness
-    )
 ```
 
 Do not round model values.
@@ -613,19 +529,7 @@ Also rank a fixed assay alone and beside an additional assay; its `final_score` 
 
 - [ ] **Step 8: Implement sort key and contiguous rank assignment**
 
-```python
-_CLASS_ORDER = {"IN SILICO PASS": 0, "REVIEW": 1, "HIGH_RISK": 2}
-
-
-def _optional_desc(value: float | None) -> tuple[int, float]:
-    return (1, 0.0) if value is None else (0, -value)
-
-
-def _optional_asc(value: float | None) -> tuple[int, float]:
-    return (1, 0.0) if value is None else (0, value)
-```
-
-Sort by class, score status, final score, inclusivity, pair penalty, Primer3 index, assay ID. Assign `rank` afterward with `dataclasses.replace` and 1-based contiguous indexes.
+Use class priorities `PASS=0`, `REVIEW=1`, `HIGH_RISK=2`. Missing optional numeric values sort after present values. Sort by class, score status, final score descending, inclusivity descending, pair penalty ascending, Primer3 index ascending, assay ID ascending. Assign `rank` afterward with `dataclasses.replace` and 1-based contiguous indexes.
 
 - [ ] **Step 9: Verify all core ranking tests**
 
@@ -657,18 +561,9 @@ git commit -m "feat: score and order final assays"
 
 **Interfaces:**
 
+Produces `render_assay_report_html(target_name: str, primer_design: PrimerDesignResult, inclusivity: InclusivityResult, specificity: SpecificityResult, assays: tuple[RankedAssay, ...]) -> str`.
+
 ```python
-def render_assay_report_html(
-    *,
-    target_name: str,
-    primer_design: PrimerDesignResult,
-    inclusivity: InclusivityResult,
-    specificity: SpecificityResult,
-    assays: tuple[RankedAssay, ...],
-) -> str:
-    return html_document
-
-
 @dataclass(frozen=True, slots=True)
 class RankingResult:
     status: Literal["SKIPPED", "COMPLETE"]
@@ -676,19 +571,9 @@ class RankingResult:
     ranking_tsv_path: Path | None
     ranking_report_path: Path
     html_report_path: Path | None
-
-
-def evaluate_ranking(
-    primer_design: PrimerDesignResult,
-    inclusivity: InclusivityResult,
-    specificity: SpecificityResult,
-    config: RankingConfig,
-    output_dir: Path,
-    *,
-    target_name: str,
-) -> RankingResult:
-    return result
 ```
+
+Produces `evaluate_ranking(primer_design: PrimerDesignResult, inclusivity: InclusivityResult, specificity: SpecificityResult, config: RankingConfig, output_dir: Path, *, target_name: str) -> RankingResult`.
 
 - [ ] **Step 1: Write RED HTML tests**
 
@@ -718,20 +603,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Write RED stage-publication tests**
 
-Create `tests/test_ranking_artifacts.py` and assert disabled behavior with deliberately invalid `object()` upstream values:
-
-```python
-result = evaluate_ranking(
-    object(),
-    object(),
-    object(),
-    RankingConfig(enabled=False),
-    output,
-    target_name="target",
-)
-```
-
-Before the call, create stale `ranking/assay_ranking.tsv` and root `report.html` containing `conservation report`. After the call:
+Create `tests/test_ranking_artifacts.py` and assert disabled behavior with deliberately invalid `object()` upstream values. Before the call, create stale `ranking/assay_ranking.tsv` and root `report.html` containing `conservation report`. After calling disabled ranking, assert:
 
 ```text
 status == SKIPPED
@@ -767,40 +639,11 @@ Expected: `RankingResult` or `evaluate_ranking` missing.
 
 - [ ] **Step 7: Implement stage publication order and atomic writes**
 
-Artifact paths:
+Artifact paths are `ranking/assay_ranking.tsv`, `ranking/ranking_report.json`, and root `report.html`. Validate `RankingConfig` before any cleanup.
 
-```python
-{
-    "tsv": output_dir / "ranking" / "assay_ranking.tsv",
-    "report": output_dir / "ranking" / "ranking_report.json",
-    "html": output_dir / "report.html",
-}
-```
+Disabled path: remove ranking TSV only, leave root HTML untouched, atomically replace ranking JSON with SKIPPED report, return no TSV/HTML path.
 
-Validate `RankingConfig` before any cleanup.
-
-Disabled path:
-
-```text
-remove ranking/assay_ranking.tsv only
-leave root report.html untouched
-atomically replace ranking/ranking_report.json with SKIPPED report
-return RankingResult(SKIPPED, empty assays, no TSV path, report path, no HTML path)
-```
-
-Enabled path:
-
-```text
-remove stale TSV, ranking JSON, and root HTML
-rank assays
-render TSV text in memory
-render JSON text in memory
-render HTML text in memory
-atomically write TSV
-atomically write HTML
-atomically write JSON report last
-return COMPLETE RankingResult
-```
+Enabled path: remove stale TSV/ranking JSON/root HTML, rank assays, render all three final text payloads in memory, atomically write TSV, atomically write HTML, atomically write JSON report last, then return COMPLETE result.
 
 Use a UUID-named sibling temporary file opened with mode `x`, UTF-8, newline `\n`, then `Path.replace()`. Always remove a leftover temporary file in `finally`.
 
@@ -884,20 +727,7 @@ Expected: ranking summary missing or ranking not invoked.
 
 - [ ] **Step 3: Integrate ranking and QC summary**
 
-Import `evaluate_ranking`, call:
-
-```python
-ranking = evaluate_ranking(
-    primer_design,
-    inclusivity,
-    specificity,
-    config.ranking,
-    output_dir,
-    target_name=config.target_name,
-)
-```
-
-Add counts from `ranking.assays`. `top_recommended_assay_id` is the first final ordered assay whose classification is `IN SILICO PASS`; return `None` when there is no PASS.
+Import `evaluate_ranking`, call it with primer design, inclusivity, specificity, ranking config, output directory, and target name. Add counts from `ranking.assays`. `top_recommended_assay_id` is the first final ordered assay whose classification is `IN SILICO PASS`; return `None` when there is no PASS.
 
 - [ ] **Step 4: Verify pipeline and prior specificity regressions**
 
