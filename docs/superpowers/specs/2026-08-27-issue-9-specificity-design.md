@@ -83,7 +83,8 @@ specificity:
 
 ### Regras de configuração
 
-- `off_targets` pode conter zero ou mais datasets.
+- Com especificidade desabilitada, `off_targets` pode estar ausente ou conter zero ou mais datasets.
+- `specificity.enabled: true` exige pelo menos um dataset em `off_targets`.
 - Cada dataset precisa de `name` não vazio e exatamente uma fonte: `fasta` ou `frozen_dataset`.
 - Nomes de datasets devem ser únicos.
 - `specificity.enabled: true` exige que `primer_design.enabled: true`.
@@ -133,15 +134,17 @@ A implementação não chama helpers privados de `inclusivity.py`. Um teste de e
 - probe respeita `max_probe_mismatches`;
 - quando `reject_primer_3_prime_mismatch` estiver habilitado, qualquer mismatch nos últimos `primer_3_prime_bases` torna o hit do primer incompatível.
 
-### Ordenação determinística
+### Ordenação determinística e retenção
 
-Antes do truncamento, os hits são ordenados de forma estável por:
+Todos os hits compatíveis são encontrados antes de qualquer limite de retenção. A geometria F/R e a classificação de risco usam o conjunto completo de hits encontrados, para que truncamento de artefato nunca transforme um off-target real em falso resultado seguro.
+
+Para publicação, os hits são ordenados de forma estável por:
 
 `dataset -> assay -> sequence -> role -> orientation -> coordinate -> mismatch_count`
 
 Critérios adicionais de desempate necessários à implementação devem ser explícitos e estáveis.
 
-Somente depois da ordenação é aplicado `max_hits_per_oligo_per_dataset`. Truncamentos são registrados no relatório.
+Somente a retenção no artefato de hits individuais é limitada por `max_hits_per_oligo_per_dataset`. O relatório registra, por dataset/assay/oligo, `total_hit_count`, `retained_hit_count` e se houve truncamento. A etapa pode permanecer `COMPLETE` com truncamento porque a geometria e as conclusões científicas foram calculadas antes dele.
 
 ## Geometria do assay
 
@@ -168,7 +171,7 @@ specificity/
 
 ### `off_target_hits.tsv`
 
-Cada linha representa um hit individual e inclui, no mínimo:
+Cada linha representa um hit individual retido e inclui, no mínimo:
 
 - dataset;
 - assay_id;
@@ -178,12 +181,13 @@ Cada linha representa um hit individual e inclui, no mínimo:
 - coordenadas;
 - mismatch_count;
 - mismatch_positions;
-- compatibilidade;
-- informação de truncamento quando aplicável ao conjunto de hits.
+- compatibilidade.
+
+Quando houver mais hits que o teto de retenção, o TSV contém os primeiros hits pela ordenação determinística e o JSON registra as contagens total e retida.
 
 ### `plausible_amplicons.tsv`
 
-Cada linha representa uma combinação F/R plausível e inclui, no mínimo:
+Cada linha representa uma combinação F/R plausível calculada a partir do conjunto completo de hits e inclui, no mínimo:
 
 - dataset;
 - assay_id;
@@ -203,7 +207,7 @@ Consolida:
 - status da etapa;
 - configuração efetiva;
 - proveniência de cada dataset;
-- contagens de sequências, hits e amplicons;
+- contagens de sequências, hits totais, hits retidos e amplicons;
 - contagens de assays com risco;
 - registros de truncamento;
 - caminhos dos artefatos.
@@ -226,8 +230,9 @@ Quando `specificity.enabled: false`:
 A etapa termina como `COMPLETE` quando a avaliação termina corretamente, inclusive quando:
 
 - não existem assays;
-- um dataset válido contém zero sequências;
-- nenhum hit é encontrado.
+- um dataset configurado e válido contém zero sequências;
+- nenhum hit é encontrado;
+- o artefato de hits individuais foi truncado depois do cálculo completo da geometria.
 
 Nesses casos, artefatos tabulares publicados devem permanecer válidos, com cabeçalhos quando aplicável.
 
@@ -235,6 +240,7 @@ Nesses casos, artefatos tabulares publicados devem permanecer válidos, com cabe
 
 A etapa falha com erro contextualizado quando houver:
 
+- especificidade habilitada sem datasets off-target;
 - dataset ausente ou ilegível;
 - FASTA inválido;
 - frozen dataset inválido;
@@ -278,7 +284,8 @@ Cobertura obrigatória:
 - IUPAC degenerado;
 - base-alvo IUPAC ambígua;
 - múltiplos hits com ordenação estável;
-- truncamento de hits;
+- truncamento que reduz somente o TSV e não altera geometria ou risco;
+- configuração habilitada sem off-targets é rejeitada;
 - FASTA válido;
 - FASTA vazio;
 - FASTA inválido;
