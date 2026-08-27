@@ -91,6 +91,24 @@ class InclusivityConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OffTargetConfig:
+    name: str
+    fasta: Path | None = None
+    frozen_dataset: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SpecificityConfig:
+    enabled: bool = False
+    max_hits_per_oligo_per_dataset: int = 20
+    max_primer_mismatches: int = 2
+    max_probe_mismatches: int = 1
+    reject_primer_3_prime_mismatch: bool = True
+    primer_3_prime_bases: int = 5
+    max_amplicon_size: int = 1000
+
+
+@dataclass(frozen=True, slots=True)
 class NcbiInputConfig:
     query: str | None = None
     accessions: tuple[str, ...] = ()
@@ -112,6 +130,8 @@ class PipelineConfig:
     conservation: ConservationConfig = field(default_factory=ConservationConfig)
     primer_design: PrimerDesignConfig = field(default_factory=PrimerDesignConfig)
     inclusivity: InclusivityConfig = field(default_factory=InclusivityConfig)
+    off_targets: tuple[OffTargetConfig, ...] = ()
+    specificity: SpecificityConfig = field(default_factory=SpecificityConfig)
 
     @property
     def selected_input(
@@ -149,6 +169,8 @@ def load_config(path: str | Path) -> PipelineConfig:
     primer_design = _parse_primer_design_config(primer_design_config)
     inclusivity_config = raw.get("inclusivity", {})
     inclusivity = _parse_inclusivity_config(inclusivity_config)
+    off_targets = _parse_off_targets(raw.get("off_targets", []))
+    specificity = _parse_specificity_config(raw.get("specificity", {}))
 
     target_name = _required_string(target, "name", section="target")
     input_fasta = _optional_path(input_config, "fasta")
@@ -170,6 +192,8 @@ def load_config(path: str | Path) -> PipelineConfig:
         conservation=conservation,
         primer_design=primer_design,
         inclusivity=inclusivity,
+        off_targets=off_targets,
+        specificity=specificity,
     )
     validate_pipeline_config(config)
     return config
@@ -212,17 +236,31 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Pipeline primer_design must be a PrimerDesignConfig.")
     if not isinstance(config.inclusivity, InclusivityConfig):
         raise ValueError("Pipeline inclusivity must be an InclusivityConfig.")
+    if not isinstance(config.off_targets, tuple):
+        raise ValueError("Pipeline off_targets must be a tuple.")
+    if not isinstance(config.specificity, SpecificityConfig):
+        raise ValueError("Pipeline specificity must be a SpecificityConfig.")
     validate_clustering_config(config.clustering)
     validate_alignment_config(config.alignment)
     validate_conservation_config(config.conservation)
     validate_primer_design_config(config.primer_design)
     validate_inclusivity_config(config.inclusivity)
+    for off_target in config.off_targets:
+        validate_off_target_config(off_target)
+    off_target_names = tuple(off_target.name for off_target in config.off_targets)
+    if len(set(off_target_names)) != len(off_target_names):
+        raise ValueError("Off-target dataset names must be unique.")
+    validate_specificity_config(config.specificity)
     if config.conservation.enabled and not config.alignment.enabled:
         raise ValueError("Enabled conservation requires enabled alignment.")
     if config.primer_design.enabled and not config.conservation.enabled:
         raise ValueError("Enabled primer design requires enabled conservation.")
     if config.inclusivity.enabled and not config.primer_design.enabled:
         raise ValueError("Enabled inclusivity requires enabled primer design.")
+    if config.specificity.enabled and not config.primer_design.enabled:
+        raise ValueError("Enabled specificity requires enabled primer design.")
+    if config.specificity.enabled and not config.off_targets:
+        raise ValueError("Enabled specificity requires at least one off-target dataset.")
     if config.input_ncbi is not None:
         validate_ncbi_input_config(config.input_ncbi)
 
@@ -383,6 +421,42 @@ def validate_inclusivity_config(config: InclusivityConfig) -> None:
         value = getattr(config, name)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"Inclusivity {name} must be a positive integer.")
+
+
+def validate_off_target_config(config: OffTargetConfig) -> None:
+    if not isinstance(config, OffTargetConfig):
+        raise ValueError("Off-target configuration must be an OffTargetConfig.")
+    if not isinstance(config.name, str) or not config.name.strip():
+        raise ValueError("Off-target name must be a non-blank string.")
+    for field_name, value in (
+        ("fasta", config.fasta),
+        ("frozen_dataset", config.frozen_dataset),
+    ):
+        if value is not None and not isinstance(value, Path):
+            raise ValueError(f"Off-target {field_name} must be a Path when configured.")
+    if sum(value is not None for value in (config.fasta, config.frozen_dataset)) != 1:
+        raise ValueError("Off-target must configure exactly one of fasta or frozen_dataset.")
+
+
+def validate_specificity_config(config: SpecificityConfig) -> None:
+    if not isinstance(config, SpecificityConfig):
+        raise ValueError("Specificity configuration must be a SpecificityConfig.")
+    if not isinstance(config.enabled, bool):
+        raise ValueError("Specificity enabled must be a boolean.")
+    if not isinstance(config.reject_primer_3_prime_mismatch, bool):
+        raise ValueError("Specificity reject_primer_3_prime_mismatch must be a boolean.")
+    for name in ("max_primer_mismatches", "max_probe_mismatches"):
+        value = getattr(config, name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"Specificity {name} must be a non-negative integer.")
+    for name in (
+        "max_hits_per_oligo_per_dataset",
+        "primer_3_prime_bases",
+        "max_amplicon_size",
+    ):
+        value = getattr(config, name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"Specificity {name} must be a positive integer.")
 
 
 def validate_primer_design_config(config: PrimerDesignConfig) -> None:
@@ -639,6 +713,88 @@ def _parse_inclusivity_config(raw: Any) -> InclusivityConfig:
     return config
 
 
+def _parse_off_targets(raw: Any) -> tuple[OffTargetConfig, ...]:
+    if not isinstance(raw, list):
+        raise ValueError("Configuration section 'off_targets' must be a list.")
+    result: list[OffTargetConfig] = []
+    for index, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Configuration off_targets entry {index} must be a mapping."
+            )
+        allowed_fields = {"name", "fasta", "frozen_dataset"}
+        unknown_fields = set(item) - allowed_fields
+        if unknown_fields:
+            rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+            raise ValueError(
+                f"Configuration off_targets entry {index} fields {rendered} are unrecognized."
+            )
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                f"Configuration off_targets entry {index} name must be a non-empty string."
+            )
+        fasta = _optional_off_target_path(item, "fasta", index=index)
+        frozen_dataset = _optional_off_target_path(
+            item, "frozen_dataset", index=index
+        )
+        config = OffTargetConfig(
+            name=name,
+            fasta=fasta,
+            frozen_dataset=frozen_dataset,
+        )
+        validate_off_target_config(config)
+        result.append(config)
+    names = tuple(item.name for item in result)
+    if len(set(names)) != len(names):
+        raise ValueError("Off-target dataset names must be unique.")
+    return tuple(result)
+
+
+def _parse_specificity_config(raw: Any) -> SpecificityConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration section 'specificity' must be a mapping.")
+    allowed_fields = {
+        "enabled",
+        "max_hits_per_oligo_per_dataset",
+        "max_primer_mismatches",
+        "max_probe_mismatches",
+        "reject_primer_3_prime_mismatch",
+        "primer_3_prime_bases",
+        "max_amplicon_size",
+    }
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ValueError(
+            f"Configuration section 'specificity' fields {rendered} are unrecognized."
+        )
+    defaults = SpecificityConfig()
+    config = SpecificityConfig(
+        enabled=raw.get("enabled", defaults.enabled),
+        max_hits_per_oligo_per_dataset=raw.get(
+            "max_hits_per_oligo_per_dataset",
+            defaults.max_hits_per_oligo_per_dataset,
+        ),
+        max_primer_mismatches=raw.get(
+            "max_primer_mismatches", defaults.max_primer_mismatches
+        ),
+        max_probe_mismatches=raw.get(
+            "max_probe_mismatches", defaults.max_probe_mismatches
+        ),
+        reject_primer_3_prime_mismatch=raw.get(
+            "reject_primer_3_prime_mismatch",
+            defaults.reject_primer_3_prime_mismatch,
+        ),
+        primer_3_prime_bases=raw.get(
+            "primer_3_prime_bases", defaults.primer_3_prime_bases
+        ),
+        max_amplicon_size=raw.get("max_amplicon_size", defaults.max_amplicon_size),
+    )
+    validate_specificity_config(config)
+    return config
+
+
 def _parse_primer_design_config(raw: Any) -> PrimerDesignConfig:
     if not isinstance(raw, dict):
         raise ValueError("Configuration section 'primer_design' must be a mapping.")
@@ -747,6 +903,19 @@ def _optional_path(raw: dict[str, Any], key: str) -> Path | None:
         return None
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Configuration value 'input.{key}' must be a non-empty string.")
+    return Path(value)
+
+
+def _optional_off_target_path(
+    raw: dict[str, Any], key: str, *, index: int
+) -> Path | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"Configuration off_targets entry {index} {key} must be a non-empty string."
+        )
     return Path(value)
 
 
