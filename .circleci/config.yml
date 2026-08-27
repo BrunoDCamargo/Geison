@@ -46,4 +46,4 @@ workflows:
   ci:
     jobs:
       - test:
-          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main" or pipeline.git.branch == "feature/issue-9-specificity"
+          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
