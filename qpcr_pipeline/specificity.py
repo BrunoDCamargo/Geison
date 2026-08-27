@@ -398,9 +398,9 @@ def evaluate_specificity(
     validate_specificity_config(config)
     output_dir = Path(output_dir)
     paths = _artifact_paths(output_dir)
-    paths["report"].parent.mkdir(parents=True, exist_ok=True)
 
     if not config.enabled:
+        paths["report"].parent.mkdir(parents=True, exist_ok=True)
         paths["report"].unlink(missing_ok=True)
         for name in _DATA_ARTIFACT_NAMES:
             (paths["report"].parent / name).unlink(missing_ok=True)
@@ -449,6 +449,20 @@ def evaluate_specificity(
             "Enabled specificity requires a COMPLETE PrimerDesignResult."
         )
 
+    resolved_output = output_dir.resolve()
+    for item in off_target_configs:
+        if item.frozen_dataset is None:
+            continue
+        resolved_frozen = item.frozen_dataset.resolve()
+        try:
+            resolved_output.relative_to(resolved_frozen)
+        except ValueError:
+            continue
+        raise SpecificityError(
+            f"Specificity output must not equal or be inside frozen off-target dataset {item.name!r}."
+        )
+
+    paths["report"].parent.mkdir(parents=True, exist_ok=True)
     try:
         datasets = load_off_target_datasets(off_target_configs)
         all_hits = tuple(
