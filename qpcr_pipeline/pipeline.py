@@ -19,6 +19,7 @@ from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen
 from qpcr_pipeline.primer3 import Primer3Runner
 from qpcr_pipeline.primer_design import design_primers
 from qpcr_pipeline.qc import evaluate_sequences
+from qpcr_pipeline.specificity import evaluate_specificity
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,12 @@ def run_pipeline(
         config.inclusivity,
         output_dir,
     )
+    specificity = evaluate_specificity(
+        primer_design,
+        config.off_targets,
+        config.specificity,
+        output_dir,
+    )
 
     summary = RunSummary(
         status="COMPLETED",
@@ -167,6 +174,17 @@ def run_pipeline(
             ),
             "proposed_compatible_count": sum(
                 assay.proposed_compatible for assay in inclusivity.assay_results
+            ),
+        },
+        "specificity": {
+            "status": specificity.status,
+            "dataset_count": len(specificity.dataset_names),
+            "sequence_count": specificity.sequence_count,
+            "assay_count": specificity.assay_count,
+            "retained_hit_count": len(specificity.hits),
+            "plausible_amplicon_count": len(specificity.amplicons),
+            "detectable_off_target_count": sum(
+                amplicon.detectable_off_target for amplicon in specificity.amplicons
             ),
         },
     }
