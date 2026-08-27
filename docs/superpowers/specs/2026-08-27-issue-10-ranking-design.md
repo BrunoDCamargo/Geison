@@ -1,55 +1,39 @@
 # Issue #10 Assay Ranking and Classification Design
 
-## Status
+## Status and goal
 
-Approved in conversation on 2026-08-27. This document defines the design for issue #10, "Classificar, ranquear e explicar os assays finais".
+Approved in conversation on 2026-08-27. This document defines issue #10, **Classificar, ranquear e explicar os assays finais**.
 
-## Goal
+The stage transforms Primer3 assays plus conservation, inclusivity, degeneracy, and specificity evidence into an explainable final classification and deterministic ranking. Classification is evaluated before score, so a `HIGH_RISK` assay can never outrank `REVIEW` or `IN SILICO PASS` because of a high numeric score.
 
-Transform Primer3 assay candidates plus inclusivity, degeneracy, conservation, and specificity evidence into a transparent final classification and deterministic ranking while preserving every candidate, including those not recommended.
+All Primer3 assays remain visible. `HIGH_RISK` means rejected for recommendation, not deleted.
 
-The ranking stage must explain why an assay received its class and score. Classification always happens before quantitative ranking, so a numerically strong HIGH_RISK assay can never outrank REVIEW or IN SILICO PASS.
-
-## Scope
+## Scope and scientific boundaries
 
 Issue #10 adds:
 
-- explicit assay classes: `IN SILICO PASS`, `REVIEW`, and `HIGH_RISK`;
-- structured reason codes with evidence;
-- a decomposable 0-100 score used only within the same class;
-- deterministic ordering;
-- a final offline `report.html` consolidating assay design, conservation, inclusivity, degeneracy, specificity, classification, and score;
-- auditable TSV and JSON artifacts;
-- a small ranking summary in `qc_report.json`.
+- `IN SILICO PASS`, `REVIEW`, and `HIGH_RISK` classes;
+- structured reason codes with source and evidence;
+- an absolute, decomposable 0-100 score;
+- deterministic class-first ordering;
+- `ranking/assay_ranking.tsv` and `ranking/ranking_report.json`;
+- a root `report.html` consolidating assay design, conservation, inclusivity, degeneracy, specificity, classification, reasons, and score;
+- a compact ranking summary in `qc_report.json`.
 
-Issue #10 does not:
+It does not:
 
-- promote an accepted IUPAC proposal into a new assay candidate;
-- recompute specificity for a proposed degenerate oligo set;
-- allow quantitative score to override class;
-- hide or delete rejected/high-risk candidates;
+- turn an accepted IUPAC proposal into a new assay;
+- recompute specificity for proposed degenerate oligos;
+- allow score to override class;
+- hide rejected candidates;
 - perform network access;
-- add external reporting or visualization dependencies.
+- add external report dependencies.
 
-## Scientific contract
-
-### Original assay remains the ranked unit
-
-Only assays produced by Primer3 are ranked. An accepted IUPAC proposal from inclusivity is contextual evidence about robustness. It never silently replaces the original oligo sequence and never becomes a separate ranked candidate in this issue.
-
-### Evidence absence is not negative evidence
-
-If inclusivity or specificity was `SKIPPED`, ranking still runs. The affected assay receives `REVIEW` with `EVIDENCE_INCOMPLETE` plus a source-specific reason. Missing evidence is never interpreted as a biological failure and never produces `HIGH_RISK` by itself.
-
-If another available source provides real HIGH_RISK evidence, HIGH_RISK still wins even when some other evidence is missing.
-
-### High-risk candidates remain visible
-
-`HIGH_RISK` means rejected for recommendation, not deleted. Every Primer3 assay remains in the TSV, JSON, and HTML report with its reasons and score state.
+Only the original Primer3 assay is ranked. IUPAC proposals from #8 are contextual robustness evidence and never silently replace the original oligos.
 
 ## Architecture
 
-Add a dedicated ranking stage after specificity:
+Ranking is a new stage after specificity:
 
 ```text
 Primer design / candidate regions
@@ -62,27 +46,33 @@ Primer design / candidate regions
                    v
                 Ranking
                    |
-        +----------+----------+
-        v          v          v
- classification   score   reason codes
-        |          |          |
-        +----------+----------+
-                   v
-          deterministic order
+        reasons -> class -> score -> deterministic order
                    |
-          TSV + JSON + HTML
+               TSV / JSON / HTML
 ```
 
-The stage consumes public result objects and joins evidence by `assay_id`. It does not parse upstream TSV/JSON artifacts.
+The stage consumes public result objects and joins them by `assay_id`; it does not parse upstream artifact files.
 
-Recommended modules:
+Recommended files:
 
-- `qpcr_pipeline/ranking.py`: public ranking models, evidence aggregation, classification, scoring, ordering, artifact publication;
-- `qpcr_pipeline/assay_report_html.py`: deterministic, self-contained HTML rendering for the final assay report;
-- `qpcr_pipeline/config.py`: `RankingConfig` and `RankingWeights`;
-- `qpcr_pipeline/pipeline.py`: stage orchestration and `qc_report.json` summary.
+- `qpcr_pipeline/ranking.py`: typed models, evidence aggregation, reasons, classification, scoring, ordering, artifacts;
+- `qpcr_pipeline/assay_report_html.py`: final self-contained assay report;
+- `qpcr_pipeline/config.py`: ranking configuration;
+- `qpcr_pipeline/pipeline.py`: orchestration and QC summary.
 
-The existing `qpcr_pipeline/report_html.py` remains specific to conservation and is not generalized.
+The existing `qpcr_pipeline/report_html.py` remains specific to conservation.
+
+Processing order is fixed:
+
+```text
+1. collect and validate evidence
+2. generate reason codes
+3. determine classification
+4. calculate five score components
+5. calculate final score
+6. order by class, score state, score, and deterministic tie breakers
+7. publish artifacts
+```
 
 ## Configuration
 
@@ -101,29 +91,29 @@ ranking:
     robustness: 0.10
 ```
 
-Validation rules:
+Validation:
 
 - `enabled` is boolean;
-- inclusivity thresholds are finite numbers in `[0, 1]`;
+- thresholds are finite numbers in `[0, 1]`;
 - `min_inclusivity_before_high_risk <= min_inclusivity_for_pass`;
-- all weights are finite and non-negative;
-- weights sum to `1.0` within a small numerical tolerance;
-- ranking enabled requires primer design enabled;
-- inclusivity and specificity are optional dependencies for execution, not enabling prerequisites.
+- weights are finite and non-negative;
+- weights sum to `1.0` within numerical tolerance;
+- enabled ranking requires enabled primer design;
+- inclusivity and specificity are not enabling prerequisites because `SKIPPED` evidence is allowed.
 
-The configurable classification behavior in the MVP is the inclusivity threshold pair. The specificity safety mapping below is an explicit minimum safety contract and cannot be weakened by configuration in this issue. Future configuration may make these rules more conservative but must not allow a detectable off-target to become PASS.
+The MVP makes inclusivity thresholds configurable. Specificity severity is a minimum safety contract: detectable off-targets cannot be configured into PASS. Future options may make specificity handling more conservative, not weaker.
 
-## Public data contract
+## Public contract
 
-Use typed, immutable models analogous to existing pipeline stages.
+Use immutable typed models consistent with existing stages.
 
 ```text
 RankingReason
-- code: str
+- code
 - severity: HIGH_RISK | REVIEW | ADVISORY
-- source: str
-- message: str
-- evidence: structured mapping
+- source
+- message
+- evidence
 
 ScoreComponents
 - inclusivity: float | None
@@ -133,59 +123,53 @@ ScoreComponents
 - robustness: float | None
 
 RankedAssay
-- rank: int
-- assay_id: str
+- rank
+- assay_id
 - classification: IN SILICO PASS | REVIEW | HIGH_RISK
 - final_score: float | None
 - score_status: COMPLETE | INCOMPLETE
-- components: ScoreComponents
-- reasons: tuple[RankingReason, ...]
+- components
+- reasons
 
 RankingResult
 - status: SKIPPED | COMPLETE
-- assays: tuple[RankedAssay, ...]
-- ranking_tsv_path: Path | None
-- ranking_report_path: Path
-- html_report_path: Path | None
+- assays
+- ranking_tsv_path
+- ranking_report_path
+- html_report_path
 ```
 
-The ranking result may additionally retain small typed evidence summaries needed by the HTML renderer, but it must not duplicate complete upstream scientific datasets unnecessarily.
+## Evidence integrity
 
-## Evidence aggregation and integrity checks
+For every Primer3 assay, ranking resolves the candidate region, inclusivity rows/proposals, specificity retention totals, and plausible amplicons.
 
-For each Primer3 assay:
-
-1. resolve its `region_id` against `PrimerDesignResult.candidates`;
-2. collect inclusivity rows for the same `assay_id`;
-3. collect degeneracy proposals for the same `assay_id`;
-4. collect specificity retention and plausible amplicons for the same `assay_id`;
-5. derive reasons, classification, and score components.
-
-Internal inconsistencies fail explicitly rather than being converted into `REVIEW`:
+The following are internal inconsistencies and fail explicitly rather than becoming `REVIEW`:
 
 - duplicate Primer3 `assay_id`;
 - duplicate candidate `region_id`;
-- assay references a missing region;
-- a `COMPLETE` inclusivity result contains unknown assay IDs;
-- a `COMPLETE` specificity result contains unknown assay IDs;
-- duplicate degeneracy proposal for the same assay/oligo role;
-- non-finite or structurally invalid metrics needed for ranking.
+- assay references a missing candidate region;
+- a `COMPLETE` inclusivity result references an unknown assay;
+- a `COMPLETE` specificity result references an unknown assay;
+- duplicate degeneracy proposal for the same `(assay_id, role)`;
+- non-finite or structurally invalid ranking metrics.
 
-A `COMPLETE` inclusivity result is expected to contain exactly one assay evaluation per Evaluation Set sequence for each Primer3 assay. Missing or duplicate rows under a `COMPLETE` status are treated as inconsistent upstream evidence and fail explicitly. This is different from the stage being `SKIPPED`, which is allowed and yields incomplete evidence.
+A `COMPLETE` inclusivity result must contain exactly one assay evaluation for every `(assay_id, evaluation_sequence_id)` pair. Missing or duplicate rows are invalid upstream evidence. If its Evaluation Set is empty, the inclusivity fraction is undefined rather than zero.
 
-If the Evaluation Set is empty, inclusivity fraction is undefined. Ranking does not divide by zero; the inclusivity and robustness components become incomplete and the assay receives `REVIEW / EVIDENCE_INCOMPLETE`.
+A `COMPLETE` specificity result must be structurally consistent with the Primer3 assays. Its `assay_count` must equal the Primer3 assay count, and retention summaries must contain exactly one row for every `(dataset, assay_id, role)` for `FORWARD`, `PROBE`, and `REVERSE`. Unknown, missing, or duplicate retention rows fail explicitly. Amplicon rows may legitimately be empty.
 
-## Structured reasons and classification
+`SKIPPED` is different from inconsistent `COMPLETE`: skipped evidence is allowed and produces an incomplete score.
 
-### Reason severities
+## Reasons and classification
+
+Reason severities:
 
 ```text
 HIGH_RISK -> forces HIGH_RISK
 REVIEW    -> prevents IN SILICO PASS
-ADVISORY  -> explanatory only
+ADVISORY  -> explanation only
 ```
 
-Initial reason code vocabulary:
+Initial stable codes:
 
 ```text
 HIGH_RISK
@@ -205,22 +189,11 @@ ADVISORY
 - IUPAC_PROPOSAL_REJECTED
 ```
 
-Each reason includes source, a stable human-readable message, and structured evidence. Example:
+Each reason carries `code`, `severity`, `source`, `message`, and structured `evidence`.
 
-```json
-{
-  "code": "DETECTABLE_OFF_TARGET",
-  "severity": "HIGH_RISK",
-  "source": "specificity",
-  "message": "Detectable off-target found",
-  "evidence": {
-    "dataset_count": 1,
-    "amplicon_count": 2
-  }
-}
-```
+Reasons are deduplicated by stable code/source identity and serialized in deterministic order: severity priority (`HIGH_RISK`, `REVIEW`, `ADVISORY`), then source, then code. This prevents duplicate `EVIDENCE_INCOMPLETE` entries or output-order drift.
 
-Classification precedence:
+Classification:
 
 ```text
 if any HIGH_RISK reason:
@@ -231,13 +204,13 @@ else:
     IN SILICO PASS
 ```
 
-### Inclusivity rules
+### Inclusivity
 
-Using the original assay only:
+Using only original assay compatibility:
 
 ```text
 fraction >= min_inclusivity_for_pass
-    -> no class downgrade
+    -> no downgrade
 
 min_inclusivity_before_high_risk <= fraction < min_inclusivity_for_pass
     -> REVIEW / INCLUSIVITY_BELOW_PASS
@@ -246,11 +219,11 @@ fraction < min_inclusivity_before_high_risk
     -> HIGH_RISK / INCLUSIVITY_BELOW_MINIMUM
 ```
 
-Defaults are `1.0` for PASS and `0.90` for the HIGH_RISK floor.
+Defaults: PASS requires `1.0`; below `0.90` is HIGH_RISK.
 
-### Specificity rules
+### Specificity
 
-Per assay across all configured off-target datasets:
+Across all configured off-target datasets:
 
 ```text
 any detectable_off_target
@@ -259,71 +232,71 @@ any detectable_off_target
 else any plausible F/R amplicon without compatible probe
     -> REVIEW / PLAUSIBLE_OFF_TARGET_AMPLICON
 
-else compatible oligo hits only, with no plausible amplicon
+else compatible oligo hits but no plausible amplicon
     -> ADVISORY / ISOLATED_OFF_TARGET_HITS
 
 else
     -> no specificity reason
 ```
 
-A detectable off-target is the #9 contract: compatible inward-facing F/R geometry plus a compatible probe inside the plausible amplicon.
+Use one highest-risk specificity classification reason per assay. Detailed counts by dataset remain in evidence and reports.
 
-### Degeneracy proposal rules
-
-An accepted proposal does not downgrade the class by itself.
+### Degeneracy proposals
 
 - `ACCEPTED` -> `ADVISORY / IUPAC_PROPOSAL_ACCEPTED`;
 - `REJECTED` -> `ADVISORY / IUPAC_PROPOSAL_REJECTED`;
 - `UNCHANGED` -> no reason required.
 
-The original assay remains the only ranked candidate.
+A proposal alone never changes class.
+
+### Missing evidence
+
+If inclusivity or specificity is `SKIPPED`, add `EVIDENCE_INCOMPLETE` plus the corresponding source-specific missing-evidence code. This forces at least `REVIEW` but never creates `HIGH_RISK` by itself.
+
+If another available source has HIGH_RISK evidence, HIGH_RISK still wins.
 
 ## Score model
 
-Score is absolute, deterministic, and decomposable. It is not normalized against other assays in the same run.
+The score is absolute and deterministic, not normalized against the other assays in the run.
 
 ```text
 final_score = 100 * (
-    0.35 * inclusivity
-  + 0.25 * specificity
-  + 0.20 * conservation
-  + 0.10 * primer3_quality
-  + 0.10 * robustness
+    weight_inclusivity     * inclusivity
+  + weight_specificity     * specificity
+  + weight_conservation    * conservation
+  + weight_primer3_quality * primer3_quality
+  + weight_robustness      * robustness
 )
 ```
 
-Weights come from configuration. Components use full internal precision and are in `[0, 1]`. Presentation rounds scores to two decimal places only.
+Default weights are `0.35 / 0.25 / 0.20 / 0.10 / 0.10`.
 
-The score never determines class and is used only to order assays within the same class.
+Components are calculated with full precision in `[0, 1]`; presentation rounds to two decimals only. Score never influences class.
 
 ### Inclusivity component
 
 ```text
-inclusivity = original_compatible_count / Evaluation_Set_count
+inclusivity = original_compatible_count / evaluation_sequence_count
 ```
 
-Use only the original assay compatibility from #8, not proposed IUPAC compatibility.
-
-If inclusivity is `SKIPPED` or the Evaluation Set is empty, this component is `None`.
+If inclusivity is `SKIPPED` or the Evaluation Set is empty, the component is `None`.
 
 ### Specificity component
 
-Use complete #9 evidence, not the truncated detailed hit artifact.
-
-When no plausible amplicon exists, compatible hit count is taken from the complete `HitRetentionSummary.total_hit_count` values for the assay, so `max_hits_per_oligo_per_dataset` cannot artificially improve the ranking.
+Use complete #9 evidence, never the truncated detailed hit list. When there is no plausible amplicon, compatible hit count is the sum of `HitRetentionSummary.total_hit_count` for the assay.
 
 ```text
 1.00                              -> zero compatible off-target hits
-max(0.80, 1 - 0.02 * hit_count)  -> compatible hits but no plausible amplicon
+max(0.80, 1 - 0.02 * hit_count)  -> hits but no plausible amplicon
 0.40                              -> plausible F/R amplicon, no detectable probe
 0.00                              -> any detectable_off_target
 ```
 
-If specificity is `SKIPPED`, this component is `None`.
+If specificity is `SKIPPED`, the component is `None`.
 
 ### Conservation component
 
-Resolve the assay's candidate region and calculate:
+Resolve the assay's candidate region:
 
 ```text
 conservation = mean(
@@ -335,7 +308,7 @@ conservation = mean(
 )
 ```
 
-Two bits is the theoretical maximum Shannon entropy for four equiprobable canonical bases. Metrics must be finite and within their scientifically valid ranges; invalid upstream metrics fail rather than being silently clamped, except for the explicit entropy normalization cap above.
+Two bits is the theoretical maximum Shannon entropy for four equiprobable canonical bases. Fraction metrics must be finite and in `[0, 1]`; entropy must be finite and non-negative. Invalid upstream values fail instead of being silently clamped, except for the explicit entropy normalization cap.
 
 ### Primer3 quality component
 
@@ -343,61 +316,44 @@ Two bits is the theoretical maximum Shannon entropy for four equiprobable canoni
 primer3_quality = 1 / (1 + pair_penalty)
 ```
 
-`pair_penalty` must be finite and non-negative when present. If it is `None`, this component is incomplete rather than treated as zero.
+A present `pair_penalty` must be finite and non-negative. `None` makes this component incomplete.
 
 ### Robustness component
 
-When inclusivity evidence is complete and no accepted proposal exists:
+With complete inclusivity evidence:
 
 ```text
-robustness = 1.0
-```
-
-For each role (`FORWARD`, `PROBE`, `REVERSE`):
-
-```text
-no accepted proposal -> role_robustness = 1.0
-accepted proposal    -> role_robustness = original_degeneracy / proposed_degeneracy
-```
-
-Then:
-
-```text
+no accepted proposal for role -> role_robustness = 1.0
+accepted proposal             -> original_degeneracy / proposed_degeneracy
 robustness = mean(FORWARD, PROBE, REVERSE)
 ```
 
-Accepted proposal degeneracies must be positive and `proposed_degeneracy >= original_degeneracy`; structurally impossible values fail explicitly.
+Accepted proposal degeneracies must be positive and `proposed_degeneracy >= original_degeneracy`.
 
-If inclusivity is `SKIPPED` or the Evaluation Set is empty, robustness is `None`.
+If inclusivity is `SKIPPED` or its Evaluation Set is empty, robustness is `None`.
 
 ## Incomplete score behavior
 
-Do not substitute zero for missing evidence.
+Missing evidence is never replaced by zero.
 
-If any component is unavailable:
+If any of the five components is unavailable:
 
 ```text
 score_status = INCOMPLETE
 final_score = null
 ```
 
-The assay receives `REVIEW / EVIDENCE_INCOMPLETE` unless another available reason already forces HIGH_RISK. HIGH_RISK still wins classification precedence.
+This remains true even if the configured weight of the missing component is zero. `score_status=COMPLETE` means all five evidence components were actually computable; weights cannot hide missing evidence.
 
-Within a class, complete-score assays are ordered before incomplete-score assays.
+The assay receives `REVIEW / EVIDENCE_INCOMPLETE` unless an available HIGH_RISK reason already wins classification.
 
 ## Deterministic ordering
 
 Sort by:
 
 ```text
-1. classification priority:
-   IN SILICO PASS
-   REVIEW
-   HIGH_RISK
-
-2. score status:
-   COMPLETE before INCOMPLETE
-
+1. class: IN SILICO PASS, REVIEW, HIGH_RISK
+2. score status: COMPLETE before INCOMPLETE
 3. final_score descending when present
 4. inclusivity component descending when present
 5. pair_penalty ascending when present
@@ -405,13 +361,13 @@ Sort by:
 7. assay_id ascending
 ```
 
-For tie breaking, missing numeric values sort after present values. Rank values are assigned after this ordering and are contiguous from 1.
+Missing numeric values sort after present values. Ranks are contiguous from 1 after sorting.
 
-This guarantees that no HIGH_RISK assay outranks REVIEW or PASS regardless of score.
+Therefore a `HIGH_RISK 99.8` remains behind every REVIEW/PASS assay.
 
 ## Artifacts
 
-When ranking is enabled and completes:
+Enabled and complete ranking publishes:
 
 ```text
 ranking/
@@ -423,84 +379,69 @@ report.html
 
 ### `assay_ranking.tsv`
 
-One row per Primer3 assay. Minimum fields:
+One row per Primer3 assay with at least:
 
-- rank;
-- assay_id;
-- region_id;
-- classification;
-- score_status;
-- final_score;
-- all five score components;
-- inclusivity numerator/denominator/fraction when available;
+- rank, assay_id, region_id, class, score status, final score;
+- all five components;
+- inclusivity count/fraction when available;
 - compatible off-target hit count;
-- plausible amplicon count;
-- detectable off-target count;
-- pair_penalty;
-- semicolon-separated stable reason codes.
+- plausible and detectable off-target counts;
+- pair penalty;
+- semicolon-separated reason codes.
 
-TSV uses presentation rounding where applicable but must not be the source of truth for downstream computation.
+TSV is presentation/audit output, not the source of truth for downstream computation.
 
 ### `ranking_report.json`
 
-Contains:
-
-- schema version;
-- effective ranking configuration;
-- class counts;
-- complete/incomplete score counts;
-- ordered assays;
-- full score components;
-- structured reasons and evidence;
-- artifact paths.
+Contains schema version, effective config, class and score-state counts, ordered assays, full score components, structured reasons/evidence, and artifact paths.
 
 ### `report.html`
 
-The final run report is self-contained, deterministic, and offline. It uses HTML escaping for all dynamic text and no CDN, remote font, external JavaScript, or network fetch.
+The root report is deterministic, self-contained, and offline. It uses safe HTML escaping for all dynamic values and contains no CDN, remote fonts, external scripts, or network fetches.
 
-For each ranked assay it shows:
+For each assay it shows:
 
-- rank, class, score, and reason codes;
-- forward/probe/reverse sequence, reference coordinates, Tm, GC, and available penalties;
+- rank, class, score, reason codes;
+- forward/probe/reverse sequences, coordinates, Tm, GC, and available penalties;
 - product size and pair penalty;
-- candidate-region conservation metrics;
-- original inclusivity count and fraction;
+- region conservation metrics;
+- original inclusivity count/fraction;
 - IUPAC proposals as contextual evidence only;
-- off-target compatible hits, plausible amplicons, and detectable off-targets by dataset;
-- five named score components.
+- specificity hit, plausible amplicon, and detectable counts by dataset;
+- all five score components.
 
-A static ordered table plus `<details>` sections is sufficient for the MVP. No charting library is required.
+A static ordered table plus `<details>` sections is sufficient; no charting library is required.
 
-## Disabled and empty behavior
+## Disabled, empty, and failure behavior
 
-### Ranking disabled
+### Disabled
 
 `ranking.enabled: false`:
 
-- status `SKIPPED`;
-- does not inspect or validate upstream scientific results;
-- publishes only `ranking/ranking_report.json` with `SKIPPED` status;
-- removes stale `ranking/assay_ranking.tsv` and root `report.html` from a prior run.
+- returns `SKIPPED`;
+- does not inspect upstream scientific result integrity;
+- removes stale `ranking/assay_ranking.tsv` and root `report.html`;
+- publishes only `ranking/ranking_report.json` with `SKIPPED` status.
 
-### Zero Primer3 assays
+### Enabled execution
 
-Ranking enabled with `PrimerDesignResult.status == COMPLETE` and zero assays:
+After ranking config itself is validated, remove stale `ranking/assay_ranking.tsv`, `ranking/ranking_report.json`, and root `report.html` before validating/aggregating enabled upstream evidence. Therefore a failed current ranking run cannot leave a previous successful report looking current.
 
-- status `COMPLETE`;
-- publishes header-only `assay_ranking.tsv`;
-- publishes `ranking_report.json` with zero assays;
-- publishes an empty-state `report.html`;
-- does not require inclusivity/specificity evidence rows for nonexistent assays.
+All final artifact contents are computed and validated before publication. Each text file is written through a temporary file and atomically replaced, following existing project patterns.
 
-### Invalid primer design state
+### Zero assays
 
-Ranking enabled with a non-`COMPLETE` `PrimerDesignResult` fails explicitly.
+Enabled ranking with `PrimerDesignResult.status == COMPLETE` and zero assays returns `COMPLETE`, publishes a header-only TSV, zero-assay JSON, and empty-state HTML. No evidence rows are required for nonexistent assays.
+
+### Invalid primer design
+
+Enabled ranking with a non-`COMPLETE` PrimerDesignResult fails explicitly.
 
 ## Pipeline integration
 
-`run_pipeline()` calls ranking after specificity and before final run summary publication.
+`run_pipeline()` calls ranking after specificity and before final summary publication.
 
-`qc_report.json` receives only a compact summary:
+`qc_report.json` receives only:
 
 ```text
 ranking.status
@@ -513,21 +454,13 @@ ranking.incomplete_score_count
 ranking.top_recommended_assay_id
 ```
 
-`top_recommended_assay_id` means the first `IN SILICO PASS` assay after deterministic ordering. If there is no PASS, it is `null`; REVIEW is not silently promoted to recommended.
-
-## Error and publication behavior
-
-Errors are contextualized with assay/source identifiers where possible.
-
-The stage computes and validates all ranking results before publishing final artifacts. Text artifacts are written through temporary files and atomically replaced using the same project pattern as existing stages. A failed ranking must not present stale output as the result of the current run.
-
-No source sequence database is queried and no network access is introduced.
+`top_recommended_assay_id` is the first `IN SILICO PASS` assay. If there is no PASS, it is `null`; REVIEW is not silently promoted to recommended.
 
 ## Test strategy
 
 Implementation follows RED -> GREEN -> REFACTOR TDD.
 
-Suggested test files:
+Suggested files:
 
 ```text
 tests/
@@ -540,51 +473,48 @@ tests/
 └── test_pipeline_ranking.py
 ```
 
-Required coverage includes:
+Required coverage:
 
-- ranking disabled defaults and stale cleanup;
-- config validation, thresholds, and weight sum;
-- 100% inclusivity PASS eligibility;
-- inclusivity in `[0.90, 1.0)` -> REVIEW;
-- inclusivity below `0.90` -> HIGH_RISK;
+- default disabled behavior and stale cleanup;
+- config thresholds and weight validation;
+- inclusivity at 100%, 90-<100%, and below 90%;
 - configurable inclusivity thresholds;
-- detectable off-target -> HIGH_RISK;
-- plausible F/R without probe -> REVIEW;
-- isolated hits -> ADVISORY and specificity score penalty;
-- specificity hit scoring uses full retention totals, not truncated published hits;
-- accepted/rejected IUPAC proposal advisories;
-- proposal robustness calculation;
-- skipped inclusivity/specificity -> REVIEW/EVIDENCE_INCOMPLETE;
-- HIGH_RISK evidence still wins when another source is missing;
-- empty Evaluation Set -> incomplete score without division by zero;
+- detectable off-target HIGH_RISK;
+- plausible F/R without probe REVIEW;
+- isolated-hit advisory and score penalty;
+- specificity scoring from full retention totals despite detailed-hit truncation;
+- accepted/rejected IUPAC proposal advisories and robustness scoring;
+- skipped evidence -> REVIEW/EVIDENCE_INCOMPLETE;
+- HIGH_RISK evidence wins even with another missing source;
+- empty Evaluation Set without division by zero;
 - missing pair penalty -> incomplete score;
+- a zero-weight missing component still yields incomplete score;
 - all five component formulas;
-- no relative normalization against other candidates;
-- class-first ordering;
-- HIGH_RISK cannot outrank REVIEW or PASS by score;
+- no relative normalization between assays;
+- class-first ordering and deterministic tie breaks;
+- HIGH_RISK never outranks REVIEW/PASS by score;
 - complete score before incomplete score within a class;
-- deterministic tie breaks;
 - all Primer3 assays preserved;
-- unknown/duplicate assay evidence fails explicitly;
-- missing candidate region fails explicitly;
-- zero-assay empty result;
-- TSV/JSON deterministic content;
-- safe HTML escaping for sequences, IDs, labels, messages, and evidence text;
-- offline HTML with no remote resources;
-- `qc_report.json` summary and top PASS assay;
-- full pipeline integration `primer_design -> inclusivity -> specificity -> ranking`.
+- reason deduplication and deterministic ordering;
+- unknown/missing/duplicate COMPLETE evidence fails explicitly;
+- specificity retention matrix integrity;
+- zero-assay result;
+- deterministic TSV/JSON;
+- HTML escaping and no remote resources;
+- QC summary and top PASS assay;
+- full pipeline path `primer_design -> inclusivity -> specificity -> ranking`.
 
-All tests run offline in the normal `pytest` suite on `develop`. No new CircleCI dependency, integration executable, cache, schedule, parallelism, or network test is needed.
+Everything runs offline in normal `pytest` on `develop`. No new CircleCI dependency, integration executable, cache, schedule, parallelism, or network test is required.
 
 ## Completion criteria
 
-Issue #10 is complete only when:
+Issue #10 closes only when:
 
-1. all issue acceptance criteria are covered by implementation and tests;
-2. classification is demonstrably evaluated before ordering by score;
-3. all Primer3 assays remain auditable, including HIGH_RISK candidates;
-4. score components and reason evidence are present in JSON and report HTML;
-5. the normal test suite passes;
-6. the merged `develop` commit is green in CircleCI;
-7. README documents classification, score semantics, and the non-diagnostic/non-experimental nature of the result;
-8. review finds no unresolved critical or important issue.
+1. acceptance criteria are implemented and tested;
+2. classification is demonstrably computed before score ordering;
+3. every Primer3 assay remains auditable;
+4. score components and structured reasons appear in JSON and final HTML;
+5. README documents class/score semantics and limitations;
+6. the normal test suite passes;
+7. the merged `develop` commit is green in CircleCI;
+8. review has no unresolved critical or important finding.
