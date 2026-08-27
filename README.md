@@ -271,3 +271,76 @@ A issue #8 avalia inclusividade contra todo o Evaluation Set. A issue #9 avalia
 especificidade contra conjuntos off-target; propostas IUPAC nunca substituem
 silenciosamente os oligos originais. A decisão final de risco e a interface de
 usuário pertencem a etapas posteriores.
+
+## Especificidade contra off-targets
+
+A análise de especificidade é opcional, vem desabilitada por padrão e depende do
+desenho de ensaios habilitado. Ela não depende de a etapa de inclusividade estar
+habilitada. Quando `specificity.enabled: true`, deve existir pelo menos um dataset
+off-target configurado, cada um com nome único e exatamente uma fonte.
+
+A configuração efetiva é:
+
+```yaml
+off_targets:
+  - name: human
+    fasta: data/human_subset.fasta
+  - name: near_neighbors
+    frozen_dataset: runs/ncbi_near_neighbors
+
+specificity:
+  enabled: false
+  max_hits_per_oligo_per_dataset: 20
+  max_primer_mismatches: 2
+  max_probe_mismatches: 1
+  reject_primer_3_prime_mismatch: true
+  primer_3_prime_bases: 5
+  max_amplicon_size: 1000
+```
+
+Os datasets podem ser FASTA locais ou datasets NCBI já congelados. A etapa de
+especificidade nunca consulta o NCBI e não usa BLAST no MVP. Para datasets
+congelados, o manifest existente é validado e referenciado para preservar query,
+accessions e versões materializadas. Para FASTA local, o relatório registra
+caminho, SHA-256 e IDs das sequências.
+
+Forward, probe e reverse são pesquisados exaustivamente na sequência fornecida e
+na reversa complementar. A comparação IUPAC segue a mesma semântica conservadora
+da inclusividade: uma base-alvo ambígua só é coberta quando todo o suporte desse
+símbolo está contido no suporte do símbolo do oligo. Oligos degenerados são
+comparados diretamente, sem expansão combinatória obrigatória.
+
+A etapa diferencia três situações:
+
+- um hit isolado de oligo, sem geometria F/R válida;
+- `primer_amplicon_plausible`, quando forward e reverse compatíveis estão voltados
+  um para o outro e delimitam um intervalo de até `max_amplicon_size`;
+- `detectable_off_target`, quando esse amplicon plausível também contém uma probe
+  compatível entre os primers.
+
+`max_hits_per_oligo_per_dataset` limita somente os hits individuais publicados em
+`off_target_hits.tsv`. Todos os hits compatíveis são avaliados antes desse limite
+para formar a geometria; portanto o truncamento do TSV não pode transformar um
+off-target real em resultado aparentemente seguro. Os amplicons preservam as
+coordenadas dos primers e probes que sustentam a classificação mesmo quando um
+desses hits não aparece entre os hits individuais retidos.
+
+Os artefatos ficam em `specificity/`:
+
+- `off_target_hits.tsv`: hits individuais retidos, com dataset, assay, sequência,
+  papel do oligo, orientação, coordenadas e mismatches;
+- `plausible_amplicons.tsv`: todas as geometrias F/R plausíveis e o estado de
+  detecção pela probe;
+- `specificity_report.json`: configuração efetiva, proveniência dos datasets,
+  contagens, truncamentos e caminhos dos artefatos.
+
+Com a etapa desabilitada, somente `specificity_report.json` é publicado com
+status `SKIPPED` e nenhum dataset off-target é lido. `qc_report.json` inclui um
+resumo com quantidade de datasets, sequências, assays, hits retidos, amplicons
+plausíveis e off-targets detectáveis.
+
+A busca exaustiva em Python é destinada a conjuntos off-target pequenos ou
+moderados, como near-neighbors e coleções de referência congeladas e curadas. Ela
+não foi projetada para varrer bancos genômicos muito grandes. Se essa necessidade
+surgir, um backend indexado, como BLAST, poderá ser adicionado sem mudar o contrato
+científico de hits, geometria e detectabilidade definido nesta etapa.
