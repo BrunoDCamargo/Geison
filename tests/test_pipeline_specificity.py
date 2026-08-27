@@ -212,17 +212,21 @@ class PipelineSpecificityTests(unittest.TestCase):
 
     def test_specificity_matches_public_inclusivity_iupac_semantics(self):
         cases = (
-            ("ARGT", "AAGT", True),
-            ("ARGT", "AGGT", True),
-            ("ARGT", "ANGT", False),
-            ("ACGT", "ATGT", True),
-            ("ACGT", "ACGA", False),
+            ("ARGT", "AAGT", 0, True),
+            ("ARGT", "AGGT", 0, True),
+            ("ARGT", "ANGT", 0, False),
+            ("ACGT", "ATGT", 1, True),
+            ("ACGT", "ACGA", 1, False),
         )
-        for oligo, target, expected in cases:
-            with self.subTest(oligo=oligo, target=target):
+        for oligo, target, max_mismatches, expected in cases:
+            with self.subTest(
+                oligo=oligo,
+                target=target,
+                max_mismatches=max_mismatches,
+            ):
                 assay = self._assay(forward=oligo)
                 specificity_config = SpecificityConfig(
-                    max_primer_mismatches=1,
+                    max_primer_mismatches=max_mismatches,
                     reject_primer_3_prime_mismatch=True,
                     primer_3_prime_bases=2,
                 )
@@ -244,7 +248,7 @@ class PipelineSpecificityTests(unittest.TestCase):
                             enabled=True,
                             search_flank=0,
                             max_hits_per_oligo=20,
-                            max_primer_mismatches=1,
+                            max_primer_mismatches=max_mismatches,
                             reject_primer_3_prime_mismatch=True,
                             primer_3_prime_bases=2,
                         ),
