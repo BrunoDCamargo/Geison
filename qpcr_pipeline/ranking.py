@@ -1,10 +1,13 @@
-"""Classify, score, and deterministically order final qPCR assay evidence."""
+"""Classify, score, order, and publish final qPCR assay evidence."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 import math
+from pathlib import Path
 from typing import Literal
+import uuid
 
 from qpcr_pipeline.config import RankingConfig, validate_ranking_config
 from qpcr_pipeline.inclusivity import DegeneracyProposal, InclusivityResult
@@ -19,6 +22,27 @@ ScoreStatus = Literal["COMPLETE", "INCOMPLETE"]
 _ROLE_ORDER = {"FORWARD": 0, "PROBE": 1, "REVERSE": 2}
 _SEVERITY_ORDER = {"HIGH_RISK": 0, "REVIEW": 1, "ADVISORY": 2}
 _CLASS_ORDER = {"IN SILICO PASS": 0, "REVIEW": 1, "HIGH_RISK": 2}
+_RANKING_COLUMNS = (
+    "rank",
+    "assay_id",
+    "region_id",
+    "classification",
+    "score_status",
+    "final_score",
+    "inclusivity",
+    "specificity",
+    "conservation",
+    "primer3_quality",
+    "robustness",
+    "original_compatible_count",
+    "evaluation_sequence_count",
+    "inclusivity_fraction",
+    "compatible_off_target_hit_count",
+    "plausible_off_target_count",
+    "detectable_off_target_count",
+    "pair_penalty",
+    "reason_codes",
+)
 
 
 class RankingError(RuntimeError):
@@ -77,6 +101,15 @@ class RankedAssay:
     plausible_off_target_count: int | None
     detectable_off_target_count: int | None
     pair_penalty: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class RankingResult:
+    status: Literal["SKIPPED", "COMPLETE"]
+    assays: tuple[RankedAssay, ...]
+    ranking_tsv_path: Path | None
+    ranking_report_path: Path
+    html_report_path: Path | None
 
 
 def classify_assays(
@@ -324,6 +357,228 @@ def rank_assays(
 
     ordered = sorted(scored, key=_ranking_sort_key)
     return tuple(replace(item, rank=index) for index, item in enumerate(ordered, 1))
+
+
+def evaluate_ranking(
+    primer_design: PrimerDesignResult,
+    inclusivity: InclusivityResult,
+    specificity: SpecificityResult,
+    config: RankingConfig,
+    output_dir: Path,
+    *,
+    target_name: str,
+) -> RankingResult:
+    """Run the final ranking stage and atomically publish its audit artifacts."""
+    validate_ranking_config(config)
+    output_dir = Path(output_dir)
+    paths = _artifact_paths(output_dir)
+    paths["report"].parent.mkdir(parents=True, exist_ok=True)
+
+    if not config.enabled:
+        paths["tsv"].unlink(missing_ok=True)
+        report = _ranking_report(
+            status="SKIPPED",
+            config=config,
+            assays=(),
+            artifacts={
+                "ranking_tsv": None,
+                "ranking_report": "ranking/ranking_report.json",
+                "html_report": None,
+            },
+        )
+        _atomic_write_text(
+            paths["report"], json.dumps(report, indent=2, sort_keys=True) + "\n"
+        )
+        return RankingResult(
+            status="SKIPPED",
+            assays=(),
+            ranking_tsv_path=None,
+            ranking_report_path=paths["report"],
+            html_report_path=None,
+        )
+
+    for key in ("tsv", "report", "html"):
+        paths[key].unlink(missing_ok=True)
+
+    assays = rank_assays(primer_design, inclusivity, specificity, config)
+    from qpcr_pipeline.assay_report_html import render_assay_report_html
+
+    tsv_text = _ranking_tsv_text(assays)
+    html_text = render_assay_report_html(
+        target_name=target_name,
+        primer_design=primer_design,
+        inclusivity=inclusivity,
+        specificity=specificity,
+        assays=assays,
+    )
+    report = _ranking_report(
+        status="COMPLETE",
+        config=config,
+        assays=assays,
+        artifacts={
+            "ranking_tsv": "ranking/assay_ranking.tsv",
+            "ranking_report": "ranking/ranking_report.json",
+            "html_report": "report.html",
+        },
+    )
+    report_text = json.dumps(report, indent=2, sort_keys=True) + "\n"
+
+    _atomic_write_text(paths["tsv"], tsv_text)
+    _atomic_write_text(paths["html"], html_text)
+    _atomic_write_text(paths["report"], report_text)
+    return RankingResult(
+        status="COMPLETE",
+        assays=assays,
+        ranking_tsv_path=paths["tsv"],
+        ranking_report_path=paths["report"],
+        html_report_path=paths["html"],
+    )
+
+
+def _artifact_paths(output_dir: Path) -> dict[str, Path]:
+    return {
+        "tsv": output_dir / "ranking" / "assay_ranking.tsv",
+        "report": output_dir / "ranking" / "ranking_report.json",
+        "html": output_dir / "report.html",
+    }
+
+
+def _tsv_value(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _ranking_tsv_text(assays: tuple[RankedAssay, ...]) -> str:
+    lines = ["\t".join(_RANKING_COLUMNS)]
+    for item in assays:
+        inclusivity_fraction = item.components.inclusivity
+        row = (
+            item.rank,
+            item.assay_id,
+            item.region_id,
+            item.classification,
+            item.score_status,
+            item.final_score,
+            item.components.inclusivity,
+            item.components.specificity,
+            item.components.conservation,
+            item.components.primer3_quality,
+            item.components.robustness,
+            item.original_compatible_count,
+            item.evaluation_sequence_count,
+            inclusivity_fraction,
+            item.compatible_off_target_hit_count,
+            item.plausible_off_target_count,
+            item.detectable_off_target_count,
+            item.pair_penalty,
+            ";".join(reason.code for reason in item.reasons),
+        )
+        lines.append("\t".join(_tsv_value(value) for value in row))
+    return "\n".join(lines) + "\n"
+
+
+def _config_json(config: RankingConfig) -> dict[str, object]:
+    return {
+        "enabled": config.enabled,
+        "min_inclusivity_for_pass": config.min_inclusivity_for_pass,
+        "min_inclusivity_before_high_risk": config.min_inclusivity_before_high_risk,
+        "weights": {
+            "inclusivity": config.weights.inclusivity,
+            "specificity": config.weights.specificity,
+            "conservation": config.weights.conservation,
+            "primer3_quality": config.weights.primer3_quality,
+            "robustness": config.weights.robustness,
+        },
+    }
+
+
+def _json_value(value: object) -> object:
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    return value
+
+
+def _assay_json(item: RankedAssay) -> dict[str, object]:
+    return {
+        "rank": item.rank,
+        "assay_id": item.assay_id,
+        "region_id": item.region_id,
+        "primer3_index": item.primer3_index,
+        "classification": item.classification,
+        "score_status": item.score_status,
+        "final_score": item.final_score,
+        "components": {
+            "inclusivity": item.components.inclusivity,
+            "specificity": item.components.specificity,
+            "conservation": item.components.conservation,
+            "primer3_quality": item.components.primer3_quality,
+            "robustness": item.components.robustness,
+        },
+        "evidence_summary": {
+            "original_compatible_count": item.original_compatible_count,
+            "evaluation_sequence_count": item.evaluation_sequence_count,
+            "compatible_off_target_hit_count": item.compatible_off_target_hit_count,
+            "plausible_off_target_count": item.plausible_off_target_count,
+            "detectable_off_target_count": item.detectable_off_target_count,
+            "pair_penalty": item.pair_penalty,
+        },
+        "reasons": [
+            {
+                "code": reason.code,
+                "severity": reason.severity,
+                "source": reason.source,
+                "message": reason.message,
+                "evidence": {
+                    key: _json_value(value) for key, value in reason.evidence
+                },
+            }
+            for reason in item.reasons
+        ],
+    }
+
+
+def _ranking_report(
+    *,
+    status: Literal["SKIPPED", "COMPLETE"],
+    config: RankingConfig,
+    assays: tuple[RankedAssay, ...],
+    artifacts: dict[str, str | None],
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": status,
+        "config": _config_json(config),
+        "counts": {
+            "assays": len(assays),
+            "in_silico_pass": sum(
+                item.classification == "IN SILICO PASS" for item in assays
+            ),
+            "review": sum(item.classification == "REVIEW" for item in assays),
+            "high_risk": sum(item.classification == "HIGH_RISK" for item in assays),
+            "complete_score": sum(item.score_status == "COMPLETE" for item in assays),
+            "incomplete_score": sum(
+                item.score_status == "INCOMPLETE" for item in assays
+            ),
+        },
+        "assays": [_assay_json(item) for item in assays],
+        "artifacts": artifacts,
+    }
+
+
+def _atomic_write_text(destination: Path, content: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _score_components(item: ClassifiedAssay) -> ScoreComponents:
