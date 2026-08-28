@@ -1,8 +1,9 @@
-"""Classify final qPCR assay evidence before any quantitative ranking."""
+"""Classify, score, and deterministically order final qPCR assay evidence."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import math
 from typing import Literal
 
 from qpcr_pipeline.config import RankingConfig, validate_ranking_config
@@ -13,9 +14,11 @@ from qpcr_pipeline.specificity import SpecificityResult
 
 ReasonSeverity = Literal["HIGH_RISK", "REVIEW", "ADVISORY"]
 AssayClassification = Literal["IN SILICO PASS", "REVIEW", "HIGH_RISK"]
+ScoreStatus = Literal["COMPLETE", "INCOMPLETE"]
 
 _ROLE_ORDER = {"FORWARD": 0, "PROBE": 1, "REVERSE": 2}
 _SEVERITY_ORDER = {"HIGH_RISK": 0, "REVIEW": 1, "ADVISORY": 2}
+_CLASS_ORDER = {"IN SILICO PASS": 0, "REVIEW": 1, "HIGH_RISK": 2}
 
 
 class RankingError(RuntimeError):
@@ -46,6 +49,34 @@ class ClassifiedAssay:
     inclusivity_available: bool
     specificity_available: bool
     missing_components: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreComponents:
+    inclusivity: float | None
+    specificity: float | None
+    conservation: float | None
+    primer3_quality: float | None
+    robustness: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class RankedAssay:
+    rank: int
+    assay_id: str
+    region_id: str
+    primer3_index: int
+    classification: AssayClassification
+    final_score: float | None
+    score_status: ScoreStatus
+    components: ScoreComponents
+    reasons: tuple[RankingReason, ...]
+    original_compatible_count: int | None
+    evaluation_sequence_count: int | None
+    compatible_off_target_hit_count: int | None
+    plausible_off_target_count: int | None
+    detectable_off_target_count: int | None
+    pair_penalty: float | None
 
 
 def classify_assays(
@@ -229,6 +260,217 @@ def classify_assays(
             )
         )
     return tuple(classified)
+
+
+def rank_assays(
+    primer_design: PrimerDesignResult,
+    inclusivity: InclusivityResult,
+    specificity: SpecificityResult,
+    config: RankingConfig,
+) -> tuple[RankedAssay, ...]:
+    """Classify first, then score and deterministically order assays within classes."""
+    classified = classify_assays(primer_design, inclusivity, specificity, config)
+    scored: list[RankedAssay] = []
+    for item in classified:
+        components = _score_components(item)
+        component_values = (
+            components.inclusivity,
+            components.specificity,
+            components.conservation,
+            components.primer3_quality,
+            components.robustness,
+        )
+        if any(value is None for value in component_values):
+            score_status: ScoreStatus = "INCOMPLETE"
+            final_score = None
+        else:
+            score_status = "COMPLETE"
+            inclusivity_score = components.inclusivity
+            specificity_score = components.specificity
+            conservation_score = components.conservation
+            primer3_score = components.primer3_quality
+            robustness_score = components.robustness
+            assert inclusivity_score is not None
+            assert specificity_score is not None
+            assert conservation_score is not None
+            assert primer3_score is not None
+            assert robustness_score is not None
+            final_score = 100.0 * (
+                config.weights.inclusivity * inclusivity_score
+                + config.weights.specificity * specificity_score
+                + config.weights.conservation * conservation_score
+                + config.weights.primer3_quality * primer3_score
+                + config.weights.robustness * robustness_score
+            )
+        scored.append(
+            RankedAssay(
+                rank=0,
+                assay_id=item.assay.assay_id,
+                region_id=item.assay.region_id,
+                primer3_index=item.assay.primer3_index,
+                classification=item.classification,
+                final_score=final_score,
+                score_status=score_status,
+                components=components,
+                reasons=item.reasons,
+                original_compatible_count=item.original_compatible_count,
+                evaluation_sequence_count=item.evaluation_sequence_count,
+                compatible_off_target_hit_count=item.compatible_off_target_hit_count,
+                plausible_off_target_count=item.plausible_off_target_count,
+                detectable_off_target_count=item.detectable_off_target_count,
+                pair_penalty=item.assay.pair_penalty,
+            )
+        )
+
+    ordered = sorted(scored, key=_ranking_sort_key)
+    return tuple(replace(item, rank=index) for index, item in enumerate(ordered, 1))
+
+
+def _score_components(item: ClassifiedAssay) -> ScoreComponents:
+    _validate_region_metrics(item.region)
+
+    inclusivity: float | None = None
+    if item.inclusivity_available:
+        if (
+            item.original_compatible_count is None
+            or item.evaluation_sequence_count is None
+            or item.evaluation_sequence_count <= 0
+        ):
+            raise RankingError("Available inclusivity evidence is missing required counts.")
+        inclusivity = item.original_compatible_count / item.evaluation_sequence_count
+
+    specificity: float | None = None
+    if item.specificity_available:
+        if (
+            item.compatible_off_target_hit_count is None
+            or item.plausible_off_target_count is None
+            or item.detectable_off_target_count is None
+        ):
+            raise RankingError("Available specificity evidence is missing required counts.")
+        if item.detectable_off_target_count:
+            specificity = 0.0
+        elif item.plausible_off_target_count:
+            specificity = 0.40
+        elif item.compatible_off_target_hit_count:
+            specificity = max(
+                0.80,
+                1.0 - 0.02 * item.compatible_off_target_hit_count,
+            )
+        else:
+            specificity = 1.0
+
+    conservation = (
+        item.region.mean_conservation
+        + item.region.minimum_conservation
+        + item.region.mean_coverage
+        + (1.0 - item.region.mean_gap_frequency)
+        + (1.0 - min(item.region.mean_entropy_bits / 2.0, 1.0))
+    ) / 5.0
+
+    pair_penalty = item.assay.pair_penalty
+    primer3_quality: float | None = None
+    if pair_penalty is not None:
+        if (
+            isinstance(pair_penalty, bool)
+            or not isinstance(pair_penalty, (int, float))
+            or not math.isfinite(pair_penalty)
+            or pair_penalty < 0.0
+        ):
+            raise RankingError("Primer3 pair_penalty must be finite and non-negative.")
+        primer3_quality = 1.0 / (1.0 + pair_penalty)
+
+    robustness: float | None = None
+    if item.inclusivity_available:
+        accepted_by_role = {
+            proposal.role: proposal
+            for proposal in item.proposals
+            if proposal.status == "ACCEPTED"
+        }
+        role_scores: list[float] = []
+        for role in ("FORWARD", "PROBE", "REVERSE"):
+            proposal = accepted_by_role.get(role)
+            if proposal is None:
+                role_scores.append(1.0)
+                continue
+            original = proposal.original_degeneracy
+            proposed = proposal.proposed_degeneracy
+            if (
+                isinstance(original, bool)
+                or not isinstance(original, int)
+                or original <= 0
+                or isinstance(proposed, bool)
+                or not isinstance(proposed, int)
+                or proposed <= 0
+                or proposed < original
+            ):
+                raise RankingError(
+                    "Accepted degeneracy proposals require positive integer degeneracies "
+                    "with proposed_degeneracy >= original_degeneracy."
+                )
+            role_scores.append(original / proposed)
+        robustness = sum(role_scores) / 3.0
+
+    return ScoreComponents(
+        inclusivity=inclusivity,
+        specificity=specificity,
+        conservation=conservation,
+        primer3_quality=primer3_quality,
+        robustness=robustness,
+    )
+
+
+def _validate_region_metrics(region: CandidateRegion) -> None:
+    for name in (
+        "usable_fraction",
+        "mean_conservation",
+        "minimum_conservation",
+        "mean_coverage",
+        "mean_gap_frequency",
+    ):
+        value = getattr(region, name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0.0 <= value <= 1.0
+        ):
+            raise RankingError(
+                f"Candidate region {name} must be a finite fraction between 0 and 1."
+            )
+    entropy = region.mean_entropy_bits
+    if (
+        isinstance(entropy, bool)
+        or not isinstance(entropy, (int, float))
+        or not math.isfinite(entropy)
+        or entropy < 0.0
+    ):
+        raise RankingError(
+            "Candidate region mean_entropy_bits must be finite and non-negative."
+        )
+
+
+def _ranking_sort_key(item: RankedAssay) -> tuple[object, ...]:
+    return (
+        _CLASS_ORDER[item.classification],
+        0 if item.score_status == "COMPLETE" else 1,
+        *_descending_optional(item.final_score),
+        *_descending_optional(item.components.inclusivity),
+        *_ascending_optional(item.pair_penalty),
+        item.primer3_index,
+        item.assay_id,
+    )
+
+
+def _descending_optional(value: float | None) -> tuple[int, float]:
+    if value is None:
+        return (1, 0.0)
+    return (0, -value)
+
+
+def _ascending_optional(value: float | None) -> tuple[int, float]:
+    if value is None:
+        return (1, 0.0)
+    return (0, value)
 
 
 def _validate_primer_design(
