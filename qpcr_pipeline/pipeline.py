@@ -19,6 +19,7 @@ from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen
 from qpcr_pipeline.primer3 import Primer3Runner
 from qpcr_pipeline.primer_design import design_primers
 from qpcr_pipeline.qc import evaluate_sequences
+from qpcr_pipeline.ranking import evaluate_ranking
 from qpcr_pipeline.specificity import evaluate_specificity
 
 
@@ -123,6 +124,14 @@ def run_pipeline(
         config.specificity,
         output_dir,
     )
+    ranking = evaluate_ranking(
+        primer_design,
+        inclusivity,
+        specificity,
+        config.ranking,
+        output_dir,
+        target_name=config.target_name,
+    )
 
     summary = RunSummary(
         status="COMPLETED",
@@ -131,6 +140,14 @@ def run_pipeline(
         sequence_ids=list(approved_ids),
     )
 
+    top_recommended_assay_id = next(
+        (
+            assay.assay_id
+            for assay in ranking.assays
+            if assay.classification == "IN SILICO PASS"
+        ),
+        None,
+    )
     qc_report = {
         "records": [
             {
@@ -186,6 +203,26 @@ def run_pipeline(
             "detectable_off_target_count": sum(
                 amplicon.detectable_off_target for amplicon in specificity.amplicons
             ),
+        },
+        "ranking": {
+            "status": ranking.status,
+            "assay_count": len(ranking.assays),
+            "in_silico_pass_count": sum(
+                assay.classification == "IN SILICO PASS" for assay in ranking.assays
+            ),
+            "review_count": sum(
+                assay.classification == "REVIEW" for assay in ranking.assays
+            ),
+            "high_risk_count": sum(
+                assay.classification == "HIGH_RISK" for assay in ranking.assays
+            ),
+            "complete_score_count": sum(
+                assay.score_status == "COMPLETE" for assay in ranking.assays
+            ),
+            "incomplete_score_count": sum(
+                assay.score_status == "INCOMPLETE" for assay in ranking.assays
+            ),
+            "top_recommended_assay_id": top_recommended_assay_id,
         },
     }
 
