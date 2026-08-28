@@ -109,6 +109,23 @@ class SpecificityConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RankingWeights:
+    inclusivity: float = 0.35
+    specificity: float = 0.25
+    conservation: float = 0.20
+    primer3_quality: float = 0.10
+    robustness: float = 0.10
+
+
+@dataclass(frozen=True, slots=True)
+class RankingConfig:
+    enabled: bool = False
+    min_inclusivity_for_pass: float = 1.0
+    min_inclusivity_before_high_risk: float = 0.90
+    weights: RankingWeights = field(default_factory=RankingWeights)
+
+
+@dataclass(frozen=True, slots=True)
 class NcbiInputConfig:
     query: str | None = None
     accessions: tuple[str, ...] = ()
@@ -132,6 +149,7 @@ class PipelineConfig:
     inclusivity: InclusivityConfig = field(default_factory=InclusivityConfig)
     off_targets: tuple[OffTargetConfig, ...] = ()
     specificity: SpecificityConfig = field(default_factory=SpecificityConfig)
+    ranking: RankingConfig = field(default_factory=RankingConfig)
 
     @property
     def selected_input(
@@ -171,6 +189,7 @@ def load_config(path: str | Path) -> PipelineConfig:
     inclusivity = _parse_inclusivity_config(inclusivity_config)
     off_targets = _parse_off_targets(raw.get("off_targets", []))
     specificity = _parse_specificity_config(raw.get("specificity", {}))
+    ranking = _parse_ranking_config(raw.get("ranking", {}))
 
     target_name = _required_string(target, "name", section="target")
     input_fasta = _optional_path(input_config, "fasta")
@@ -194,6 +213,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         inclusivity=inclusivity,
         off_targets=off_targets,
         specificity=specificity,
+        ranking=ranking,
     )
     validate_pipeline_config(config)
     return config
@@ -240,6 +260,8 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Pipeline off_targets must be a tuple.")
     if not isinstance(config.specificity, SpecificityConfig):
         raise ValueError("Pipeline specificity must be a SpecificityConfig.")
+    if not isinstance(config.ranking, RankingConfig):
+        raise ValueError("Pipeline ranking must be a RankingConfig.")
     validate_clustering_config(config.clustering)
     validate_alignment_config(config.alignment)
     validate_conservation_config(config.conservation)
@@ -251,6 +273,7 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
     if len(set(off_target_names)) != len(off_target_names):
         raise ValueError("Off-target dataset names must be unique.")
     validate_specificity_config(config.specificity)
+    validate_ranking_config(config.ranking)
     if config.conservation.enabled and not config.alignment.enabled:
         raise ValueError("Enabled conservation requires enabled alignment.")
     if config.primer_design.enabled and not config.conservation.enabled:
@@ -261,6 +284,8 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Enabled specificity requires enabled primer design.")
     if config.specificity.enabled and not config.off_targets:
         raise ValueError("Enabled specificity requires at least one off-target dataset.")
+    if config.ranking.enabled and not config.primer_design.enabled:
+        raise ValueError("Enabled ranking requires enabled primer design.")
     if config.input_ncbi is not None:
         validate_ncbi_input_config(config.input_ncbi)
 
@@ -457,6 +482,61 @@ def validate_specificity_config(config: SpecificityConfig) -> None:
         value = getattr(config, name)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"Specificity {name} must be a positive integer.")
+
+
+def validate_ranking_config(config: RankingConfig) -> None:
+    if not isinstance(config, RankingConfig):
+        raise ValueError("Ranking configuration must be a RankingConfig.")
+    if not isinstance(config.enabled, bool):
+        raise ValueError("Ranking enabled must be a boolean.")
+    for name in (
+        "min_inclusivity_for_pass",
+        "min_inclusivity_before_high_risk",
+    ):
+        value = getattr(config, name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0.0 <= value <= 1.0
+        ):
+            raise ValueError(
+                f"Ranking {name} must be a finite number between 0 and 1."
+            )
+    if config.min_inclusivity_before_high_risk > config.min_inclusivity_for_pass:
+        raise ValueError(
+            "Ranking min_inclusivity_before_high_risk cannot exceed "
+            "min_inclusivity_for_pass."
+        )
+    if not isinstance(config.weights, RankingWeights):
+        raise ValueError("Ranking weights must be a RankingWeights.")
+    values = (
+        config.weights.inclusivity,
+        config.weights.specificity,
+        config.weights.conservation,
+        config.weights.primer3_quality,
+        config.weights.robustness,
+    )
+    for name, value in zip(
+        (
+            "inclusivity",
+            "specificity",
+            "conservation",
+            "primer3_quality",
+            "robustness",
+        ),
+        values,
+        strict=True,
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0.0
+        ):
+            raise ValueError(f"Ranking weight {name} must be finite and non-negative.")
+    if not math.isclose(sum(values), 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError("Ranking weights must sum to 1.0.")
 
 
 def validate_primer_design_config(config: PrimerDesignConfig) -> None:
@@ -792,6 +872,62 @@ def _parse_specificity_config(raw: Any) -> SpecificityConfig:
         max_amplicon_size=raw.get("max_amplicon_size", defaults.max_amplicon_size),
     )
     validate_specificity_config(config)
+    return config
+
+
+def _parse_ranking_config(raw: Any) -> RankingConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration section 'ranking' must be a mapping.")
+    allowed_fields = {
+        "enabled",
+        "min_inclusivity_for_pass",
+        "min_inclusivity_before_high_risk",
+        "weights",
+    }
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        rendered = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ValueError(
+            f"Configuration section 'ranking' fields {rendered} are unrecognized."
+        )
+    weights_raw = raw.get("weights", {})
+    if not isinstance(weights_raw, dict):
+        raise ValueError("Configuration section 'ranking.weights' must be a mapping.")
+    allowed_weights = {
+        "inclusivity",
+        "specificity",
+        "conservation",
+        "primer3_quality",
+        "robustness",
+    }
+    unknown_weights = set(weights_raw) - allowed_weights
+    if unknown_weights:
+        rendered = ", ".join(sorted(str(field) for field in unknown_weights))
+        raise ValueError(
+            f"Configuration section 'ranking.weights' fields {rendered} are unrecognized."
+        )
+    defaults = RankingConfig()
+    weight_defaults = defaults.weights
+    config = RankingConfig(
+        enabled=raw.get("enabled", defaults.enabled),
+        min_inclusivity_for_pass=raw.get(
+            "min_inclusivity_for_pass", defaults.min_inclusivity_for_pass
+        ),
+        min_inclusivity_before_high_risk=raw.get(
+            "min_inclusivity_before_high_risk",
+            defaults.min_inclusivity_before_high_risk,
+        ),
+        weights=RankingWeights(
+            inclusivity=weights_raw.get("inclusivity", weight_defaults.inclusivity),
+            specificity=weights_raw.get("specificity", weight_defaults.specificity),
+            conservation=weights_raw.get("conservation", weight_defaults.conservation),
+            primer3_quality=weights_raw.get(
+                "primer3_quality", weight_defaults.primer3_quality
+            ),
+            robustness=weights_raw.get("robustness", weight_defaults.robustness),
+        ),
+    )
+    validate_ranking_config(config)
     return config
 
 
