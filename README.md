@@ -127,7 +127,9 @@ Os artefatos publicados são:
 
 O relatório permite zoom pela roda do mouse, pan por arraste, restauração da visão
 completa, detalhes por hover e zoom ao clicar nas janelas mais conservadas. Esta
-etapa apenas calcula e visualiza os picos.
+etapa apenas calcula e visualiza os picos. Se o ranking final estiver habilitado
+na mesma execução, ele assume depois a propriedade de `report.html` e substitui
+este relatório pelo relatório consolidado dos assays.
 
 Com conservação desabilitada, apenas
 `conservation/conservation_report.json` é publicado com status `SKIPPED`; dados
@@ -344,3 +346,67 @@ moderados, como near-neighbors e coleções de referência congeladas e curadas.
 não foi projetada para varrer bancos genômicos muito grandes. Se essa necessidade
 surgir, um backend indexado, como BLAST, poderá ser adicionado sem mudar o contrato
 científico de hits, geometria e detectabilidade definido nesta etapa.
+
+## Classificação e ranking final dos assays
+
+O ranking final é opcional, vem desabilitado por padrão e depende do desenho de
+ensaios habilitado. Inclusividade e especificidade podem estar desabilitadas, mas
+nesse caso a ausência de evidência impede `IN SILICO PASS` e o assay fica pelo
+menos em `REVIEW` com reason codes explícitos.
+
+A configuração padrão é:
+
+```yaml
+ranking:
+  enabled: false
+  min_inclusivity_for_pass: 1.0
+  min_inclusivity_before_high_risk: 0.90
+  weights:
+    inclusivity: 0.35
+    specificity: 0.25
+    conservation: 0.20
+    primer3_quality: 0.10
+    robustness: 0.10
+```
+
+A classificação acontece antes do score. Com os valores padrão, inclusividade
+original de 100% não rebaixa a classe; valores de 90% até menos de 100% geram
+`REVIEW`; abaixo de 90% gera `HIGH_RISK`. Na especificidade, qualquer
+`detectable_off_target` gera `HIGH_RISK`; um amplicon F/R plausível sem probe
+compatível gera `REVIEW`; hits isolados são apenas advisory e reduzem o componente
+de especificidade.
+
+O score é absoluto, determinístico e vai de 0 a 100. Ele é decomposto em cinco
+componentes nomeados: inclusividade, especificidade, conservação, qualidade
+Primer3 e robustez. Os pesos padrão são, respectivamente, 35%, 25%, 20%, 10% e
+10%. A classe é sempre a primeira chave de ordenação, portanto nenhum score alto
+permite que `HIGH_RISK` ultrapasse `REVIEW` ou `IN SILICO PASS`.
+
+Se qualquer componente necessário estiver indisponível, `score_status` passa a
+`INCOMPLETE` e `final_score` fica vazio, mesmo que o peso configurado daquele
+componente seja zero. Evidência ausente não é transformada artificialmente em
+score zero.
+
+Propostas IUPAC aceitas ou rejeitadas continuam sendo evidência contextual. O
+assay original do Primer3 é o único candidato ranqueado, e uma proposta degenerada
+não é reavaliada automaticamente contra off-targets nem substitui silenciosamente
+F/Probe/R.
+
+Os artefatos são:
+
+- `ranking/assay_ranking.tsv`: uma linha por assay, incluindo classe, score,
+  componentes e reason codes;
+- `ranking/ranking_report.json`: configuração efetiva, contagens, componentes e
+  reasons estruturados com evidências;
+- `report.html`: relatório final autocontido com F/Probe/R, métricas da região,
+  inclusividade, propostas de degeneração, especificidade, classificação e
+  ranking.
+
+Com ranking desabilitado, o estágio não altera `report.html`; portanto o relatório
+publicado pela conservação continua disponível. Com ranking habilitado, o ranking
+assume a propriedade de `report.html` e substitui o relatório de conservação pelo
+relatório final consolidado dos assays.
+
+`IN SILICO PASS` significa apenas que o assay satisfez as regras computacionais e
+as evidências disponíveis desta execução. Essa classificação não constitui nem
+substitui validação experimental do ensaio.
