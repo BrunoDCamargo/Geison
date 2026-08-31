@@ -154,6 +154,11 @@ def _atomic_write_text(destination: Path, text: str) -> None:
         temporary.replace(destination)
     except BaseException:
         temporary.unlink(missing_ok=True)
+        for directory in (destination.parent, destination.parent.parent):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
         raise
 
 
