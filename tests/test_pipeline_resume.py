@@ -1,14 +1,9 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from qpcr_pipeline.config import PipelineConfig
 from qpcr_pipeline.execution import ExecutionPolicy, STAGE_ORDER
 from qpcr_pipeline.pipeline import run_pipeline
-
-
-pytestmark = pytest.mark.skip(reason="temporary Task 5 regression isolation")
 
 
 def _write_fasta(path: Path):
