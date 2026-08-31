@@ -10,7 +10,6 @@ import subprocess
 from pathlib import Path
 from typing import Mapping, Protocol
 
-from qpcr_pipeline import primer_design as _primer_design_module
 from qpcr_pipeline.checkpoint_codecs import (
     ALIGNMENT_CODEC,
     CLUSTERING_CODEC,
@@ -27,15 +26,10 @@ from qpcr_pipeline.checkpointing import (
     CheckpointRequest,
     file_sha256,
 )
-from qpcr_pipeline.config import (
-    NcbiInputConfig,
-    PipelineConfig,
-    PrimerDesignConfig,
-    validate_primer_design_config,
-)
+from qpcr_pipeline.config import PipelineConfig
 from qpcr_pipeline.execution import STAGE_DEPENDENCIES, STAGE_ORDER
 from qpcr_pipeline.ncbi import validate_frozen_dataset
-from qpcr_pipeline.primer_design import _select_candidate_regions
+from qpcr_pipeline.primer_design import primer3_required
 
 
 class ToolIdentityProvider(Protocol):
@@ -47,19 +41,6 @@ class StageCheckpointDefinition:
     name: str
     dependencies: tuple[str, ...]
     codec: object
-
-
-def primer3_required(conservation, config: PrimerDesignConfig) -> bool:
-    """Return whether this exact primer-design request will invoke Primer3."""
-    validate_primer_design_config(config)
-    if not config.enabled:
-        return False
-    return bool(_select_candidate_regions(conservation, config))
-
-
-# Keep the public helper reachable from the scientific module for callers while the
-# implementation remains anchored to its single candidate-selection function.
-setattr(_primer_design_module, "primer3_required", primer3_required)
 
 
 _CODECS = {
