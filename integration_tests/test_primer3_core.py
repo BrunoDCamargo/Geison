@@ -1,7 +1,7 @@
 import shutil
 import unittest
 
-from qpcr_pipeline.config import PrimerDesignConfig
+from qpcr_pipeline.config import OligoConstraints, PrimerDesignConfig
 from qpcr_pipeline.primer3 import (
     SubprocessPrimer3Runner,
     build_primer3_input,
@@ -34,6 +34,32 @@ CANDIDATE = CandidateRegion(
     mean_gap_frequency=0.0,
     mean_entropy_bits=0.0,
 )
+INTEGRATION_CONFIG = PrimerDesignConfig(
+    enabled=True,
+    assays_per_region=5,
+    product_size_min=70,
+    product_size_max=220,
+    primer=OligoConstraints(
+        min_size=16,
+        opt_size=20,
+        max_size=28,
+        min_tm=50.0,
+        opt_tm=60.0,
+        max_tm=72.0,
+        min_gc_percent=20.0,
+        max_gc_percent=80.0,
+    ),
+    probe=OligoConstraints(
+        min_size=16,
+        opt_size=24,
+        max_size=32,
+        min_tm=55.0,
+        opt_tm=65.0,
+        max_tm=80.0,
+        min_gc_percent=20.0,
+        max_gc_percent=80.0,
+    ),
+)
 
 
 @unittest.skipUnless(
@@ -42,12 +68,11 @@ CANDIDATE = CandidateRegion(
 )
 class Primer3CoreIntegrationTests(unittest.TestCase):
     def test_real_binary_returns_complete_assays_with_consistent_coordinates(self):
-        config = PrimerDesignConfig(enabled=True, assays_per_region=5)
         candidates = (CANDIDATE,)
         input_text = build_primer3_input(
             SYNTHETIC_CONSENSUS,
             candidates,
-            config,
+            INTEGRATION_CONFIG,
         )
 
         output_text = SubprocessPrimer3Runner().run(input_text)
