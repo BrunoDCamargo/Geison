@@ -4,14 +4,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
 
 from qpcr_pipeline.config import (
     AlignmentConfig,
     ClusteringConfig,
+    NcbiInputConfig,
     PipelineConfig,
     SpecificityConfig,
 )
 from qpcr_pipeline.execution import ExecutionPolicy, STAGE_ORDER
+from qpcr_pipeline.ncbi import NcbiFetchedRecord
 from qpcr_pipeline.pipeline import run_pipeline
 from pipeline_checkpoint_fixtures import checkpoint_alignment
 
@@ -302,3 +306,46 @@ def test_mafft_version_change_invalidates_alignment_and_descendants_only(tmp_pat
         "specificity": "FORCED",
         "ranking": "FORCED",
     }
+
+
+class _NcbiClient:
+    def __init__(self, sequence: str):
+        self.sequence = sequence
+        self.fetch_count = 0
+
+    def resolve_query(self, query, max_records):
+        raise AssertionError("accession-mode test must not resolve a query")
+
+    def fetch_records(self, identifiers, *, identifier_kind):
+        assert identifiers == ("ACC",)
+        assert identifier_kind == "accession"
+        self.fetch_count += 1
+        record = SeqRecord(Seq(self.sequence), id="ACC.1", description="ACC record")
+        record.annotations["molecule_type"] = "DNA"
+        return (NcbiFetchedRecord(request_id="ACC", record=record),)
+
+
+def test_forced_online_input_refresh_changes_result_fingerprint_and_forces_downstream(tmp_path):
+    outdir = tmp_path / "run"
+    config = PipelineConfig(
+        target_name="target",
+        input_ncbi=NcbiInputConfig(accessions=("ACC",), retries=0),
+    )
+    first_client = _NcbiClient("ACGTACGTACGT")
+    second_client = _NcbiClient("ACGTACGAACGT")
+
+    run_pipeline(config, outdir, ncbi_client=first_client)
+    first_fingerprint = _manifest(outdir, "input")["result_fingerprint"]
+
+    run_pipeline(
+        config,
+        outdir,
+        ncbi_client=second_client,
+        execution=ExecutionPolicy(resume=True, force_step="input"),
+    )
+    second_fingerprint = _manifest(outdir, "input")["result_fingerprint"]
+
+    assert first_client.fetch_count == 1
+    assert second_client.fetch_count == 1
+    assert second_fingerprint != first_fingerprint
+    assert _actions(outdir) == {stage: "FORCED" for stage in STAGE_ORDER}
