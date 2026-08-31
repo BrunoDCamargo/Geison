@@ -20,10 +20,17 @@ from qpcr_pipeline.config import (
 )
 from qpcr_pipeline.inclusivity import evaluate_inclusivity
 from qpcr_pipeline.local_input import LocalSequenceRecord
-from qpcr_pipeline.models import DiscoverySet, EvaluationSet
+from qpcr_pipeline.models import EvaluationSet
 from qpcr_pipeline.pipeline import run_pipeline
 from qpcr_pipeline.primer_design import AssayCandidate, DesignedOligo, PrimerDesignResult
 from qpcr_pipeline.specificity_matching import enumerate_compatible_hits
+from pipeline_checkpoint_fixtures import (
+    checkpoint_alignment,
+    checkpoint_clustering,
+    checkpoint_conservation,
+    checkpoint_primer,
+    skipped_inclusivity,
+)
 
 
 FIXTURE_FASTA = Path("tests/fixtures/target_small.fasta")
@@ -74,41 +81,27 @@ class PipelineSpecificityTests(unittest.TestCase):
             report_path=Path("unused-primer-report.json"),
         )
 
-    @staticmethod
-    def _inclusivity_skipped():
-        return SimpleNamespace(
-            status="SKIPPED",
-            evaluation_sequence_ids=(),
-            assay_results=(),
-        )
-
-    def _upstream_patches(self, primer_result):
+    def _upstream_patches(self, output: Path, primer_result: PrimerDesignResult):
         return (
             patch(
                 "qpcr_pipeline.pipeline.cluster_sequences",
-                return_value=SimpleNamespace(discovery_set=DiscoverySet(("seq-1",))),
+                side_effect=lambda *args, **kwargs: checkpoint_clustering(output),
             ),
             patch(
                 "qpcr_pipeline.pipeline.align_discovery",
-                return_value=SimpleNamespace(
-                    status="COMPLETE",
-                    reference_id="seq-1",
-                    reference_mode="automatic",
-                ),
+                side_effect=lambda *args, **kwargs: checkpoint_alignment(output),
             ),
             patch(
                 "qpcr_pipeline.pipeline.analyze_conservation",
-                return_value=SimpleNamespace(
-                    status="COMPLETE",
-                    reference_id="seq-1",
-                    positions=(),
-                    windows=(),
-                ),
+                side_effect=lambda *args, **kwargs: checkpoint_conservation(output),
             ),
-            patch("qpcr_pipeline.pipeline.design_primers", return_value=primer_result),
+            patch(
+                "qpcr_pipeline.pipeline.design_primers",
+                side_effect=lambda *args, **kwargs: checkpoint_primer(output, primer_result),
+            ),
             patch(
                 "qpcr_pipeline.pipeline.evaluate_inclusivity",
-                return_value=self._inclusivity_skipped(),
+                side_effect=lambda *args, **kwargs: skipped_inclusivity(output),
             ),
         )
 
@@ -152,9 +145,9 @@ class PipelineSpecificityTests(unittest.TestCase):
                 ),
             )
             primer_result = self._primer_result()
-            patches = self._upstream_patches(primer_result)
+            output = root / "out"
+            patches = self._upstream_patches(output, primer_result)
             with patches[0], patches[1], patches[2], patches[3], patches[4]:
-                output = root / "out"
                 run_pipeline(config, output)
             qc = json.loads((output / "qc_report.json").read_text(encoding="utf-8"))
         self.assertEqual(qc["specificity"]["status"], "COMPLETE")

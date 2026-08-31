@@ -2,7 +2,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from qpcr_pipeline.config import (
@@ -15,9 +14,16 @@ from qpcr_pipeline.config import (
     RankingConfig,
     SpecificityConfig,
 )
-from qpcr_pipeline.models import DiscoverySet
 from qpcr_pipeline.pipeline import run_pipeline
 from qpcr_pipeline.ranking import evaluate_ranking as real_evaluate_ranking
+from pipeline_checkpoint_fixtures import (
+    checkpoint_alignment,
+    checkpoint_clustering,
+    checkpoint_conservation,
+    checkpoint_inclusivity,
+    checkpoint_primer,
+    checkpoint_specificity,
+)
 from ranking_fixtures import (
     make_inclusivity_result,
     make_primer_result,
@@ -29,7 +35,7 @@ FIXTURE_FASTA = Path("tests/fixtures/target_small.fasta")
 
 
 class PipelineRankingTests(unittest.TestCase):
-    def _enabled_config(self) -> PipelineConfig:
+    def _enabled_config(self, off_target_path: Path) -> PipelineConfig:
         return PipelineConfig(
             target_name="target",
             input_fasta=FIXTURE_FASTA,
@@ -37,38 +43,38 @@ class PipelineRankingTests(unittest.TestCase):
             conservation=ConservationConfig(enabled=True),
             primer_design=PrimerDesignConfig(enabled=True),
             inclusivity=InclusivityConfig(enabled=True),
-            off_targets=(OffTargetConfig(name="off", fasta=Path("unused-off.fa")),),
+            off_targets=(OffTargetConfig(name="off", fasta=off_target_path),),
             specificity=SpecificityConfig(enabled=True),
             ranking=RankingConfig(enabled=True),
         )
 
     @staticmethod
-    def _base_upstream_patches(primer, inclusivity, specificity):
+    def _base_upstream_patches(output, primer, inclusivity, specificity):
         return (
             patch(
                 "qpcr_pipeline.pipeline.cluster_sequences",
-                return_value=SimpleNamespace(discovery_set=DiscoverySet(("seq-1",))),
+                side_effect=lambda *args, **kwargs: checkpoint_clustering(output),
             ),
             patch(
                 "qpcr_pipeline.pipeline.align_discovery",
-                return_value=SimpleNamespace(
-                    status="COMPLETE",
-                    reference_id="seq-1",
-                    reference_mode="automatic",
-                ),
+                side_effect=lambda *args, **kwargs: checkpoint_alignment(output),
             ),
             patch(
                 "qpcr_pipeline.pipeline.analyze_conservation",
-                return_value=SimpleNamespace(
-                    status="COMPLETE",
-                    reference_id="seq-1",
-                    positions=(),
-                    windows=(),
-                ),
+                side_effect=lambda *args, **kwargs: checkpoint_conservation(output),
             ),
-            patch("qpcr_pipeline.pipeline.design_primers", return_value=primer),
-            patch("qpcr_pipeline.pipeline.evaluate_inclusivity", return_value=inclusivity),
-            patch("qpcr_pipeline.pipeline.evaluate_specificity", return_value=specificity),
+            patch(
+                "qpcr_pipeline.pipeline.design_primers",
+                side_effect=lambda *args, **kwargs: checkpoint_primer(output, primer),
+            ),
+            patch(
+                "qpcr_pipeline.pipeline.evaluate_inclusivity",
+                side_effect=lambda *args, **kwargs: checkpoint_inclusivity(output, inclusivity),
+            ),
+            patch(
+                "qpcr_pipeline.pipeline.evaluate_specificity",
+                side_effect=lambda *args, **kwargs: checkpoint_specificity(output, specificity),
+            ),
         )
 
     def test_default_pipeline_publishes_skipped_ranking_summary_and_report(self):
@@ -99,11 +105,14 @@ class PipelineRankingTests(unittest.TestCase):
         primer = make_primer_result()
         inclusivity = make_inclusivity_result(primer)
         specificity = make_specificity_result(primer)
-        patches = self._base_upstream_patches(primer, inclusivity, specificity)
         with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "out"
+            root = Path(tmpdir)
+            output = root / "out"
+            off_target = root / "off.fa"
+            off_target.write_text(">off\nACGT\n", encoding="utf-8")
+            patches = self._base_upstream_patches(output, primer, inclusivity, specificity)
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
-                run_pipeline(self._enabled_config(), output)
+                run_pipeline(self._enabled_config(off_target), output)
             qc = json.loads((output / "qc_report.json").read_text(encoding="utf-8"))
             self.assertEqual(qc["ranking"]["status"], "COMPLETE")
             self.assertEqual(qc["ranking"]["assay_count"], 1)
@@ -130,11 +139,14 @@ class PipelineRankingTests(unittest.TestCase):
             sequence_ids=sequence_ids,
         )
         specificity = make_specificity_result(primer)
-        patches = self._base_upstream_patches(primer, inclusivity, specificity)
         with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "out"
+            root = Path(tmpdir)
+            output = root / "out"
+            off_target = root / "off.fa"
+            off_target.write_text(">off\nACGT\n", encoding="utf-8")
+            patches = self._base_upstream_patches(output, primer, inclusivity, specificity)
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
-                run_pipeline(self._enabled_config(), output)
+                run_pipeline(self._enabled_config(off_target), output)
             qc = json.loads((output / "qc_report.json").read_text(encoding="utf-8"))
         self.assertEqual(qc["ranking"]["review_count"], 1)
         self.assertEqual(qc["ranking"]["in_silico_pass_count"], 0)
@@ -145,17 +157,22 @@ class PipelineRankingTests(unittest.TestCase):
         inclusivity = make_inclusivity_result(primer)
         specificity = make_specificity_result(primer)
         events = []
-        patches = self._base_upstream_patches(primer, inclusivity, specificity)
-
-        def specificity_side_effect(*args, **kwargs):
-            events.append("specificity")
-            return specificity
 
         def ranking_side_effect(*args, **kwargs):
             events.append("ranking")
             return real_evaluate_ranking(*args, **kwargs)
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output = root / "out"
+            off_target = root / "off.fa"
+            off_target.write_text(">off\nACGT\n", encoding="utf-8")
+            patches = self._base_upstream_patches(output, primer, inclusivity, specificity)
+
+            def specificity_side_effect(*args, **kwargs):
+                events.append("specificity")
+                return checkpoint_specificity(output, specificity)
+
             with (
                 patches[0],
                 patches[1],
@@ -171,7 +188,7 @@ class PipelineRankingTests(unittest.TestCase):
                     side_effect=ranking_side_effect,
                 ),
             ):
-                run_pipeline(self._enabled_config(), Path(tmpdir) / "out")
+                run_pipeline(self._enabled_config(off_target), output)
         self.assertEqual(events, ["specificity", "ranking"])
 
 
