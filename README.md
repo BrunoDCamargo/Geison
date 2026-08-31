@@ -4,6 +4,51 @@ Pipeline para desenho e avaliação in silico de ensaios qPCR/RT-qPCR.
 
 O desenvolvimento ativo acontece na branch `develop`.
 
+## Checkpoints e retomada
+
+Toda execução com `--outdir` grava checkpoints internos por etapa em
+`<outdir>/.checkpoints/`. Uma execução normal continua recalculando todas as
+etapas; os checkpoints apenas deixam essa saída pronta para uma retomada futura.
+
+```bash
+qpcr-pipeline run config.yaml --outdir run1
+qpcr-pipeline run config.yaml --outdir run1 --resume
+qpcr-pipeline run config.yaml --outdir run1 --from-step conservation
+qpcr-pipeline run config.yaml --outdir run1 --resume --force-step specificity
+```
+
+`--resume` valida o manifest, o estado tipado e os SHA-256 dos artefatos de cada
+etapa. Checkpoints válidos são reutilizados; uma etapa ausente, incompleta,
+corrompida ou incompatível com os inputs, parâmetros ou versões atuais é
+recalculada junto com seus dependentes. A invalidação segue o grafo do pipeline,
+portanto mudar somente um parâmetro de especificidade não refaz alinhamento ou
+conservação, enquanto mudar o clustering invalida toda a cadeia que depende dele.
+
+`--from-step` é estrito: a etapa escolhida e seus dependentes são recalculados,
+mas todos os checkpoints necessários fora desse subgrafo precisam continuar
+válidos. Se algum pré-requisito estiver inválido, o comando falha antes de iniciar
+nova computação científica e informa a etapa bloqueante.
+
+`--force-step` só pode ser usado junto com `--resume`. Ele força a etapa escolhida
+e todos os seus dependentes, mas mantém ramos independentes reutilizáveis quando
+seus checkpoints continuam válidos. Por exemplo, forçar inclusividade não obriga
+a refazer especificidade; o ranking é refeito porque depende das duas evidências.
+
+Os fingerprints incluem apenas os parâmetros relevantes da etapa, identidades dos
+inputs, resultados das dependências e a versão do Geison. Quando usados, CD-HIT,
+MAFFT e Primer3 também entram com sua identidade de versão somente na etapa que os
+invoca. Alteração ou remoção de um output declarado, de `state.json` ou do manifest
+torna o checkpoint não reutilizável.
+
+`.checkpoints/` é infraestrutura interna e local ao próprio `outdir`; não existe
+cache global. Copiar um diretório de saída completo preserva seu estado local de
+retomada, desde que os arquivos continuem íntegros. `run_summary.json` registra
+`stage_actions` com `RUN`, `REUSE` ou `FORCED` para mostrar exatamente o que foi
+recalculado ou reaproveitado.
+
+Sem `--outdir`, o comando continua apenas carregando e validando a configuração,
+e controles de retomada não são aceitos.
+
 ## Clustering do Discovery Set
 
 O clustering é opcional e vem desabilitado por padrão. Quando habilitado, a
