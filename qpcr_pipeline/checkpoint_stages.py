@@ -116,10 +116,10 @@ def stage_parameters(stage: str, config: PipelineConfig) -> Mapping[str, object]
     if stage == "inclusivity":
         return asdict(config.inclusivity)
     if stage == "specificity":
-        return {
-            "config": asdict(config.specificity),
-            "off_targets": _off_target_parameters(config),
-        }
+        parameters: dict[str, object] = {"config": asdict(config.specificity)}
+        if config.specificity.enabled:
+            parameters["off_targets"] = _off_target_parameters(config)
+        return parameters
     if stage == "ranking":
         return {"target_name": config.target_name, "config": asdict(config.ranking)}
     raise AssertionError(stage)
@@ -151,6 +151,8 @@ def stage_input_identities(stage: str, config: PipelineConfig) -> Mapping[str, o
         return {}
 
     if stage == "specificity":
+        if not config.specificity.enabled:
+            return {}
         identities: list[dict[str, object]] = []
         for item in config.off_targets:
             if item.fasta is not None:
