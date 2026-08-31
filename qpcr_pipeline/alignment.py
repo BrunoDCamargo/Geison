@@ -323,6 +323,7 @@ def _parse_aligned_fasta(
         output_text = output_path.read_text(encoding="utf-8")
     except Exception as error:
         raise MafftError(f"MAFFT output is not valid FASTA: {error}") from error
+    output_text = _normalize_mafft_fasta_case(output_text)
     _validate_raw_aligned_fasta(output_text)
     try:
         output_records = list(SeqIO.parse(StringIO(output_text), "fasta"))
@@ -371,6 +372,13 @@ def _parse_aligned_fasta(
     if set(parsed) != set(records_by_id):
         raise MafftError("MAFFT output does not contain exactly the expected internal IDs.")
     return parsed
+
+
+def _normalize_mafft_fasta_case(output_text: str) -> str:
+    return "".join(
+        line if line.startswith(">") else line.upper()
+        for line in output_text.splitlines(keepends=True)
+    )
 
 
 def _validate_raw_aligned_fasta(output_text: str) -> None:
