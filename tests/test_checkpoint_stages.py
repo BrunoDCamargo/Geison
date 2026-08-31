@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 
 from qpcr_pipeline import checkpoint_stages
-from qpcr_pipeline.alignment import AlignmentResult
 from qpcr_pipeline.clustering import ClusteringResult
 from qpcr_pipeline.config import (
     ClusteringConfig,
@@ -19,7 +18,7 @@ from qpcr_pipeline.config import (
 from qpcr_pipeline.conservation import ConservationResult, PositionConservation, WindowConservation
 from qpcr_pipeline.models import DiscoverySet, EvaluationSet, TargetSequenceSet
 from qpcr_pipeline.ncbi import AcquiredNcbiDataset
-from qpcr_pipeline.primer_design import PrimerDesignResult, primer3_required
+from qpcr_pipeline.primer_design import primer3_required
 from qpcr_pipeline.qc import QCResult
 from qpcr_pipeline.ranking import RankingResult
 from qpcr_pipeline.specificity import SpecificityResult
@@ -172,9 +171,9 @@ def _perfect_conservation(outdir: Path, position_count: int):
 
 def test_primer3_required_matches_candidate_selection_and_tool_identity(tmp_path):
     provider = FakeToolIdentityProvider()
-    conservation = _perfect_conservation(tmp_path, 100)
-    disabled = PrimerDesignConfig(enabled=False, candidate_region_length=100)
-    enabled = PrimerDesignConfig(enabled=True, candidate_region_length=100)
+    conservation = _perfect_conservation(tmp_path, 200)
+    disabled = PrimerDesignConfig(enabled=False, candidate_region_length=200)
+    enabled = PrimerDesignConfig(enabled=True, candidate_region_length=200)
     assert primer3_required(conservation, disabled) is False
     assert primer3_required(ConservationResult("COMPLETE", "s1", (), (), (), "", "", None, None, None, None, None, tmp_path / "empty.json"), enabled) is False
     assert primer3_required(conservation, enabled) is True
