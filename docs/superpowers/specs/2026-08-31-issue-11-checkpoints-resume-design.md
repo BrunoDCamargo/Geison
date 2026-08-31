@@ -39,27 +39,26 @@ The checkpoint graph is explicit rather than inferred from call order.
 input
   |
   v
- qc
-  |
-  v
-clustering
-  |
-  v
-alignment
-  |
-  v
-conservation
-  |
-  v
-primer_design
-  |\
-  | \
-  v  v
-inclusivity   specificity
-  \           /
-   \         /
-    v       v
-      ranking
+ qc ---------------------------+
+  |                             |
+  v                             |
+clustering                       |
+  |                             |
+  v                             |
+alignment                         |
+  |                             |
+  v                             |
+conservation                      |
+  |                             |
+  v                             |
+primer_design                     |
+  |\                             |
+  | \                            |
+  v  v                           v
+inclusivity <--------------------+   specificity
+  \                                  /
+   \                                /
+    +-------------> ranking <-------+
 ```
 
 Direct dependencies:
@@ -76,7 +75,7 @@ Direct dependencies:
 | `specificity` | `primer_design` |
 | `ranking` | `primer_design`, `inclusivity`, `specificity` |
 
-`inclusivity` also depends on the approved evaluation sequence set produced by QC. Declaring that dependency explicitly prevents a QC change from leaving inclusivity incorrectly reusable through a superficially unchanged primer-design result.
+`inclusivity` depends on both the approved evaluation sequence set produced by QC and the assay definitions produced by primer design. Declaring both dependencies prevents a QC change from leaving inclusivity incorrectly reusable through a superficially unchanged primer-design result.
 
 External off-target inputs are stage-local inputs of `specificity`, not graph stages.
 
@@ -133,11 +132,13 @@ Actions are:
 
 - `RUN`: execute the stage and write a new checkpoint;
 - `REUSE`: load a valid checkpoint;
-- `FORCED`: execute because the user explicitly forced the stage or it is a transitive dependent of a forced stage.
+- `FORCED`: execute because the user explicitly forced the stage or it is a transitive dependent of a forced/invalid stage.
 
 `FORCED` is operationally a run but remains distinct in diagnostics.
 
-The planner computes the complete plan before scientific execution when using `--from-step`, so invalid prerequisites fail before any stage output is modified.
+For `--from-step`, the planner computes the complete plan and validates every required reusable boundary checkpoint before scientific execution, so an invalid prerequisite fails before any stage output is modified.
+
+For `--resume`, once a stage is invalid, that stage and all transitive dependents are scheduled to run even if an old downstream checkpoint happens to remain on disk. The planner does not wait to see whether the rerun produces byte-identical results before deciding to reuse descendants.
 
 ## Checkpoint layout
 
@@ -198,9 +199,10 @@ A completed manifest has this conceptual structure:
   "schema_version": 1,
   "stage": "specificity",
   "status": "COMPLETE",
-  "fingerprint": "sha256:...",
+  "fingerprint": "sha256:causal-inputs-and-policy",
+  "result_fingerprint": "sha256:causal-fingerprint-plus-published-state",
   "dependencies": {
-    "primer_design": "sha256:..."
+    "primer_design": "sha256:dependency-result-fingerprint"
   },
   "inputs": {
     "off_targets": "sha256:..."
@@ -244,7 +246,8 @@ On success:
 1. the scientific stage completes its own output publication;
 2. the typed `state.json` is written atomically;
 3. hashes of all checkpoint-declared outputs and state are calculated;
-4. the final `COMPLETE` manifest is written atomically.
+4. `result_fingerprint` is calculated from the causal `fingerprint` plus state/output identities;
+5. the final `COMPLETE` manifest is written atomically.
 
 On a catchable stage exception, the manager attempts to publish `FAILED` and then re-raises the original failure. A failure to publish the diagnostic manifest must not hide the original scientific exception.
 
@@ -252,19 +255,37 @@ If the process dies between steps, no `COMPLETE` manifest is created and the sta
 
 ## Fingerprints
 
-A stage fingerprint is SHA-256 over canonical deterministic JSON containing:
+Two deterministic hashes have distinct roles.
+
+### Causal fingerprint
+
+`fingerprint` answers: "Would the same stage be requested under the current scientific inputs and policy?"
+
+It is SHA-256 over canonical deterministic JSON containing:
 
 - checkpoint schema version;
 - stage name;
 - Geison version;
 - relevant stage parameters only;
-- direct dependency fingerprints;
-- identities of stage-local external inputs;
+- direct dependency `result_fingerprint` values;
+- identities of stage-local external inputs that are knowable without performing the stage;
 - external tool identity when that tool participates in the enabled stage.
 
-Canonical serialization uses stable key ordering and excludes timestamps, output paths that do not affect scientific meaning, runtime action (`RUN`/`REUSE`) and other incidental metadata.
+A checkpoint can be reused only when its stored causal fingerprint matches the currently expected causal fingerprint.
 
-A downstream fingerprint therefore changes automatically when any direct dependency fingerprint changes.
+### Result fingerprint
+
+`result_fingerprint` answers: "Which concrete completed result did this stage produce?"
+
+It is SHA-256 over canonical JSON containing:
+
+- the causal `fingerprint`;
+- the checkpoint-state SHA-256;
+- the sorted durable output path/SHA-256 pairs.
+
+Downstream dependency fingerprints always reference the dependency's `result_fingerprint`, not merely its causal fingerprint. Therefore a stage that legitimately produces different bytes under the same request, such as a refreshed online acquisition, necessarily invalidates downstream checkpoints.
+
+Canonical serialization uses stable key ordering and excludes timestamps, runtime action (`RUN`/`REUSE`), absolute output-directory location and other incidental metadata.
 
 ### Relevant configuration projections
 
@@ -283,7 +304,7 @@ The projections are explicit and covered by tests. The implementation must not h
 
 ### Local FASTA/GenBank
 
-The `input` fingerprint includes the selected input mode, relevant parsing configuration and SHA-256 identity of the source bytes used by the run.
+The `input` causal fingerprint includes the selected input mode, relevant parsing configuration and SHA-256 identity of the source bytes used by the run.
 
 A changed local input file therefore invalidates `input` and every dependent stage.
 
@@ -291,13 +312,17 @@ The `input` state snapshot contains the normalized records required to resume do
 
 ### Frozen NCBI dataset
 
-The `input` fingerprint includes the frozen dataset identity/manifest and relevant acquisition configuration. Existing frozen-dataset immutability and output-directory safety rules remain authoritative.
+The `input` causal fingerprint includes the frozen dataset identity/manifest and relevant acquisition configuration. Existing frozen-dataset immutability and output-directory safety rules remain authoritative.
 
 ### Online NCBI acquisition
 
-A successful acquisition is checkpointed as the materialized dataset used by the run. `--resume` with an otherwise matching acquisition request reuses that completed dataset without another network request.
+Online acquisition needs separate request and result identity because NCBI may return a different concrete dataset for the same query over time.
 
-The online state of NCBI is not queried merely to decide whether an existing checkpoint is valid. To intentionally refresh acquisition, the user can run normally or use `--resume --force-step input`.
+For reuse, the `input` causal fingerprint includes the acquisition request/configuration identity and the existing materialized checkpoint is validated by its saved output/state hashes. `--resume` does not query NCBI merely to check freshness.
+
+When online acquisition is actually run, the newly materialized dataset hashes participate in `result_fingerprint`. If refreshed acquisition returns different data while the request is unchanged, the new `result_fingerprint` changes and all dependent stages are invalidated.
+
+To intentionally refresh acquisition, the user can run normally or use `--resume --force-step input`.
 
 ## External software identity
 
@@ -318,18 +343,19 @@ A disabled stage must not become invalid merely because an unused external tool 
 A `COMPLETE` checkpoint is reusable only when:
 
 1. its schema and stage name are valid;
-2. its expected fingerprint matches the current expected fingerprint;
+2. its expected causal fingerprint matches the current expected fingerprint;
 3. every declared output exists;
 4. every declared output SHA-256 matches;
 5. `state.json` exists;
 6. the state SHA-256 matches;
-7. the stage codec can decode and validate the state.
+7. the stored `result_fingerprint` matches a recomputation from the validated state/outputs;
+8. the stage codec can decode and validate the state.
 
 Any failure makes the checkpoint invalid. Partial reuse is forbidden.
 
 Checkpoint output lists contain durable outputs owned by that stage. Shared or conditionally overwritten presentation aliases must not create false invalidation.
 
-In particular, the root `report.html` has conditional ownership between conservation/ranking behavior from issue #10. Conservation must not declare that shared root alias as a checkpoint-critical output if a later valid ranking stage may replace it. Ranking may declare the root report only when ranking is the active owner for that configuration.
+In particular, the root `report.html` has conditional ownership between conservation/ranking behavior from issue #10. Conservation must not declare that shared root alias as a checkpoint-critical output if a later valid ranking stage may replace it. Ranking may declare the root report only when ranking is the active owner for that configuration. Stable scientific/report artifacts with exclusive ownership remain checkpoint-declared and hash-validated.
 
 ## CLI contract
 
@@ -347,15 +373,17 @@ Valid stage names are the names in the stage registry.
 
 A run without resume flags:
 
-- recalculates every enabled/defined stage;
+- recalculates every defined stage;
 - does not silently reuse prior checkpoints;
 - writes or replaces checkpoints as stages complete.
 
-This means any successful normal run is automatically resumable later.
+A scientifically disabled stage still executes its configured disabled behavior and can publish a valid checkpoint.
+
+Any successful normal run is automatically resumable later.
 
 ### `--resume`
 
-`--resume` reuses every valid checkpoint and runs only invalid stages plus stages whose expected fingerprint is invalidated through the dependency graph.
+`--resume` reuses every valid checkpoint and runs only invalid stages plus their transitive dependents.
 
 Example after a specificity-only parameter change:
 
@@ -368,8 +396,10 @@ conservation   REUSE
 primer_design  REUSE
 inclusivity    REUSE
 specificity    RUN
-ranking        RUN
+ranking        FORCED
 ```
+
+`ranking` is marked `FORCED` because a dependency is being recomputed. It is not reused even if its old manifest remains physically present.
 
 ### `--from-step STAGE`
 
@@ -432,7 +462,7 @@ conservation   valid
 primer_design  valid
 inclusivity    valid
 specificity    invalid
-ranking        invalid
+ranking        dependent: rerun
 ```
 
 ### Change clustering parameter
@@ -441,12 +471,12 @@ ranking        invalid
 input          valid
 qc             valid
 clustering     invalid
-alignment      invalid
-conservation   invalid
-primer_design  invalid
-inclusivity    invalid
-specificity    invalid
-ranking        invalid
+alignment      dependent: rerun
+conservation   dependent: rerun
+primer_design  dependent: rerun
+inclusivity    dependent: rerun
+specificity    dependent: rerun
+ranking        dependent: rerun
 ```
 
 ### Corrupt one alignment output
@@ -455,7 +485,7 @@ Alignment fails output-hash validation. Under `--resume`, alignment runs again a
 
 ### Change ranking weights
 
-Only `ranking` becomes invalid.
+Only `ranking` becomes invalid and reruns.
 
 ## Run diagnostics
 
@@ -466,12 +496,12 @@ Only `ranking` becomes invalid.
   "stage_actions": [
     {"stage": "input", "action": "REUSE"},
     {"stage": "specificity", "action": "RUN"},
-    {"stage": "ranking", "action": "RUN"}
+    {"stage": "ranking", "action": "FORCED"}
   ]
 }
 ```
 
-The exact existing scientific summary fields remain preserved. Issue #12 may later add richer environment, duration and reproducibility diagnostics.
+The existing scientific summary fields remain preserved. Issue #12 may later add richer environment, duration and reproducibility diagnostics.
 
 Invalid checkpoint errors must identify at minimum:
 
@@ -494,7 +524,7 @@ Implementation follows TDD. Tests must cover both planning logic and actual pipe
 
 ### Checkpoint unit tests
 
-- canonical fingerprint determinism;
+- canonical causal/result fingerprint determinism;
 - relevant config projection isolation;
 - manifest `RUNNING`, `COMPLETE`, `FAILED` lifecycle;
 - state/output SHA-256 validation;
@@ -503,7 +533,8 @@ Implementation follows TDD. Tests must cover both planning logic and actual pipe
 - missing/corrupt declared output;
 - codec rejection of malformed state;
 - tool-version invalidation;
-- Geison-version invalidation.
+- Geison-version invalidation;
+- same online acquisition request with changed materialized data yields a changed `result_fingerprint`.
 
 ### Planner tests
 
@@ -541,7 +572,7 @@ All current unit tests remain green. Integration tests on `main` continue to cov
 | `--from-step` continues from chosen stage | Strict `--from-step` contract |
 | `--force-step` recalculates selected stage and invalidates dependents | DAG transitive forced subgraph |
 | Specificity parameter does not recalculate alignment/conservation | Relevant configuration projections + DAG |
-| Clustering parameter invalidates clustering and dependent chain | Dependency fingerprints + DAG |
+| Clustering parameter invalidates clustering and dependent chain | Dependency result fingerprints + DAG |
 | Tests simulate interruption and resume | Pipeline interruption/resume test |
 
 ## Implementation boundaries
