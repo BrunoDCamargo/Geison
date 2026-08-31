@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geison-qpcr"
+version = "0.1.0.dev0"
+description = "Pipeline for in silico qPCR/RT-qPCR assay design and evaluation"
+requires-python = ">=3.10"
+dependencies = [
+    "biopython>=1.85,<2",
+    "PyYAML>=6.0,<7",
+]
+
+[project.scripts]
+qpcr-pipeline = "qpcr_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["qpcr_pipeline*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

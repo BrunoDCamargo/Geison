@@ -1,0 +1,71 @@
+import argparse
+from pathlib import Path
+
+from qpcr_pipeline.config import load_config
+from qpcr_pipeline.execution import ExecutionPolicy, STAGE_ORDER
+from qpcr_pipeline.pipeline import run_pipeline
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="qpcr-pipeline")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser(
+        "run", help="Run or validate the qPCR pipeline configuration"
+    )
+    run_parser.add_argument("config", type=Path)
+    run_parser.add_argument("--outdir", type=Path)
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse valid checkpoints and recompute only invalid stages",
+    )
+    run_parser.add_argument(
+        "--from-step",
+        choices=STAGE_ORDER,
+        help="Restart strictly from this stage using valid prerequisite checkpoints",
+    )
+    run_parser.add_argument(
+        "--force-step",
+        choices=STAGE_ORDER,
+        help="With --resume, force this stage and its dependent subgraph",
+    )
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command == "run":
+        config = load_config(args.config)
+        resume_control_requested = (
+            args.resume or args.from_step is not None or args.force_step is not None
+        )
+
+        if args.outdir is None:
+            if resume_control_requested:
+                parser.error(
+                    "--resume, --from-step, and --force-step require --outdir"
+                )
+            print(f"Loaded configuration for target: {config.target_name}")
+            return 0
+
+        try:
+            execution = ExecutionPolicy(
+                resume=args.resume,
+                from_step=args.from_step,
+                force_step=args.force_step,
+            )
+        except ValueError as error:
+            parser.error(str(error))
+
+        summary = run_pipeline(config, args.outdir, execution=execution)
+        print(
+            f"{summary.status}: {summary.target_name} "
+            f"({summary.sequence_count} sequences)"
+        )
+        return 0
+
+    raise RuntimeError(f"Unsupported command: {args.command}")
