@@ -124,11 +124,36 @@ def test_specificity_input_identity_changes_with_off_target_bytes(tmp_path):
     off_target = tmp_path / "off.fasta"
     target.write_text(">s1\nACGT\n", encoding="utf-8")
     off_target.write_text(">o1\nAAAA\n", encoding="utf-8")
-    config = replace(_config(target), off_targets=(OffTargetConfig("db", fasta=off_target),))
+    config = replace(
+        _config(target),
+        off_targets=(OffTargetConfig("db", fasta=off_target),),
+        specificity=SpecificityConfig(enabled=True),
+    )
     first = stage_input_identities("specificity", config)
     off_target.write_text(">o1\nTTTT\n", encoding="utf-8")
     second = stage_input_identities("specificity", config)
     assert first != second
+
+
+def test_disabled_specificity_does_not_read_or_hash_off_target_inputs(tmp_path):
+    target = tmp_path / "target.fasta"
+    target.write_text(">s1\nACGT\n", encoding="utf-8")
+    missing_first = tmp_path / "missing-one.fasta"
+    missing_second = tmp_path / "missing-two.fasta"
+    first = replace(
+        _config(target),
+        off_targets=(OffTargetConfig("db", fasta=missing_first),),
+        specificity=SpecificityConfig(enabled=False),
+    )
+    second = replace(
+        _config(target),
+        off_targets=(OffTargetConfig("other", fasta=missing_second),),
+        specificity=SpecificityConfig(enabled=False),
+    )
+
+    assert stage_input_identities("specificity", first) == {}
+    assert stage_input_identities("specificity", second) == {}
+    assert stage_parameters("specificity", first) == stage_parameters("specificity", second)
 
 
 def test_disabled_clustering_does_not_request_tool_identity(tmp_path):
