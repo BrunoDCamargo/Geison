@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import hashlib
 import json
@@ -212,12 +212,14 @@ def _parse_manifest(value: object) -> CheckpointManifest:
     }
     if set(value) != required:
         raise ValueError("checkpoint manifest fields are invalid")
+
     schema_version = value["schema_version"]
     stage = value["stage"]
     status = value["status"]
     fingerprint = value["fingerprint"]
     result = value["result_fingerprint"]
-    mappings = tuple(value[key] for key in ("dependencies", "inputs", "parameters", "software", "tools"))
+    mapping_keys = ("dependencies", "inputs", "parameters", "software", "tools")
+
     if schema_version != CHECKPOINT_SCHEMA_VERSION:
         raise ValueError("checkpoint schema version is unsupported")
     if not isinstance(stage, str) or not stage:
@@ -226,9 +228,11 @@ def _parse_manifest(value: object) -> CheckpointManifest:
         raise ValueError("checkpoint status is invalid")
     if not isinstance(fingerprint, str) or not fingerprint.startswith("sha256:"):
         raise ValueError("checkpoint fingerprint is invalid")
-    if result is not None and (not isinstance(result, str) or not result.startswith("sha256:")):
+    if result is not None and (
+        not isinstance(result, str) or not result.startswith("sha256:")
+    ):
         raise ValueError("checkpoint result fingerprint is invalid")
-    if any(not isinstance(item, dict) for item in mappings):
+    if any(not isinstance(value[key], dict) for key in mapping_keys):
         raise ValueError("checkpoint request metadata is invalid")
 
     raw_outputs = value["outputs"]
@@ -266,7 +270,10 @@ def _parse_manifest(value: object) -> CheckpointManifest:
     raw_error = value["error"]
     if raw_error is not None and (
         not isinstance(raw_error, dict)
-        or any(not isinstance(k, str) or not isinstance(v, str) for k, v in raw_error.items())
+        or any(
+            not isinstance(key, str) or not isinstance(item, str)
+            for key, item in raw_error.items()
+        )
     ):
         raise ValueError("checkpoint error metadata is invalid")
 
@@ -292,7 +299,13 @@ class CheckpointManager:
         self.outdir = Path(outdir)
 
     def _stage_dir(self, stage: str) -> Path:
-        if not isinstance(stage, str) or not stage or "/" in stage or "\\" in stage or stage in {".", ".."}:
+        if (
+            not isinstance(stage, str)
+            or not stage
+            or "/" in stage
+            or "\\" in stage
+            or stage in {".", ".."}
+        ):
             raise ValueError("checkpoint stage must be a simple non-empty name")
         return self.outdir / ".checkpoints" / stage
 
@@ -302,7 +315,9 @@ class CheckpointManager:
     def _state_path(self, stage: str) -> Path:
         return self._stage_dir(stage) / "state.json"
 
-    def _base_manifest(self, request: CheckpointRequest, status: CheckpointStatus) -> CheckpointManifest:
+    def _base_manifest(
+        self, request: CheckpointRequest, status: CheckpointStatus
+    ) -> CheckpointManifest:
         return CheckpointManifest(
             schema_version=CHECKPOINT_SCHEMA_VERSION,
             stage=request.stage,
@@ -320,7 +335,10 @@ class CheckpointManager:
         )
 
     def _write_manifest(self, manifest: CheckpointManifest) -> None:
-        _atomic_write_text(self._manifest_path(manifest.stage), _json_text(_manifest_payload(manifest)))
+        _atomic_write_text(
+            self._manifest_path(manifest.stage),
+            _json_text(_manifest_payload(manifest)),
+        )
 
     def begin(self, request: CheckpointRequest) -> CheckpointManifest:
         manifest = self._base_manifest(request, "RUNNING")
@@ -329,13 +347,17 @@ class CheckpointManager:
 
     def _relative_output(self, output: Path) -> str:
         resolved_outdir = self.outdir.resolve()
-        resolved_output = Path(output).resolve()
+        resolved_output = output.resolve()
         try:
             relative = resolved_output.relative_to(resolved_outdir)
         except ValueError as error:
-            raise ValueError("Checkpoint outputs must be inside the pipeline output directory.") from error
+            raise ValueError(
+                "Checkpoint outputs must be inside the pipeline output directory."
+            ) from error
         if relative.parts and relative.parts[0] == ".checkpoints":
-            raise ValueError("Scientific checkpoint outputs must not point inside .checkpoints.")
+            raise ValueError(
+                "Scientific checkpoint outputs must not point inside .checkpoints."
+            )
         return relative.as_posix()
 
     def complete(
@@ -354,12 +376,16 @@ class CheckpointManager:
             path=state_path.relative_to(self.outdir).as_posix(),
             sha256=file_sha256(state_path),
         )
+
         identities: list[OutputIdentity] = []
-        for output in outputs:
-            relative = self._relative_output(Path(output))
-            if not Path(output).is_file():
-                raise ValueError(f"Checkpoint output does not exist as a file: {relative}")
-            identities.append(OutputIdentity(relative, file_sha256(Path(output))))
+        for raw_output in outputs:
+            output = Path(raw_output)
+            relative = self._relative_output(output)
+            if not output.is_file():
+                raise ValueError(
+                    f"Checkpoint output does not exist as a file: {relative}"
+                )
+            identities.append(OutputIdentity(relative, file_sha256(output)))
         ordered = tuple(sorted(identities, key=lambda item: item.path))
         causal = causal_fingerprint(request)
         manifest = CheckpointManifest(
@@ -367,7 +393,9 @@ class CheckpointManager:
             stage=request.stage,
             status="COMPLETE",
             fingerprint=causal,
-            result_fingerprint=result_fingerprint(causal, state_identity.sha256, ordered),
+            result_fingerprint=result_fingerprint(
+                causal, state_identity.sha256, ordered
+            ),
             dependencies=dict(request.dependencies),
             inputs=dict(request.inputs),
             parameters=dict(request.parameters),
@@ -380,27 +408,12 @@ class CheckpointManager:
         self._write_manifest(manifest)
         return manifest
 
-    def fail(self, request: CheckpointRequest, error: BaseException) -> CheckpointManifest:
-        manifest = self._base_manifest(request, "FAILED")
-        failed = CheckpointManifest(
-            **{
-                **manifest.__dict__ if hasattr(manifest, "__dict__") else {
-                    "schema_version": manifest.schema_version,
-                    "stage": manifest.stage,
-                    "status": manifest.status,
-                    "fingerprint": manifest.fingerprint,
-                    "result_fingerprint": manifest.result_fingerprint,
-                    "dependencies": manifest.dependencies,
-                    "inputs": manifest.inputs,
-                    "parameters": manifest.parameters,
-                    "software": manifest.software,
-                    "tools": manifest.tools,
-                    "outputs": manifest.outputs,
-                    "state": manifest.state,
-                    "error": manifest.error,
-                },
-                "error": {"type": type(error).__name__, "message": str(error)},
-            }
+    def fail(
+        self, request: CheckpointRequest, error: BaseException
+    ) -> CheckpointManifest:
+        failed = replace(
+            self._base_manifest(request, "FAILED"),
+            error={"type": type(error).__name__, "message": str(error)},
         )
         try:
             self._write_manifest(failed)
@@ -408,72 +421,171 @@ class CheckpointManager:
             pass
         return failed
 
-    def validate(self, request: CheckpointRequest, codec: StateCodec[T]) -> CheckpointValidation[T]:
+    def validate(
+        self, request: CheckpointRequest, codec: StateCodec[T]
+    ) -> CheckpointValidation[T]:
         manifest_path = self._manifest_path(request.stage)
         if not manifest_path.is_file():
-            return CheckpointValidation(False, CheckpointInvalidity.MISSING_MANIFEST, "checkpoint manifest is missing", None)
+            return CheckpointValidation(
+                False,
+                CheckpointInvalidity.MISSING_MANIFEST,
+                "checkpoint manifest is missing",
+                None,
+            )
         try:
-            manifest = _parse_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError) as error:
-            return CheckpointValidation(False, CheckpointInvalidity.INVALID_MANIFEST, str(error), None)
+            manifest = _parse_manifest(
+                json.loads(manifest_path.read_text(encoding="utf-8"))
+            )
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            ValueError,
+            TypeError,
+        ) as error:
+            return CheckpointValidation(
+                False, CheckpointInvalidity.INVALID_MANIFEST, str(error), None
+            )
         if manifest.stage != request.stage:
-            return CheckpointValidation(False, CheckpointInvalidity.INVALID_MANIFEST, "checkpoint stage does not match request", None)
+            return CheckpointValidation(
+                False,
+                CheckpointInvalidity.INVALID_MANIFEST,
+                "checkpoint stage does not match request",
+                None,
+            )
         if manifest.status != "COMPLETE":
-            return CheckpointValidation(False, CheckpointInvalidity.NON_COMPLETE_STATUS, f"checkpoint status is {manifest.status}", None)
+            return CheckpointValidation(
+                False,
+                CheckpointInvalidity.NON_COMPLETE_STATUS,
+                f"checkpoint status is {manifest.status}",
+                None,
+            )
+
         expected_causal = causal_fingerprint(request)
         if manifest.fingerprint != expected_causal:
-            return CheckpointValidation(False, CheckpointInvalidity.FINGERPRINT_MISMATCH, "causal fingerprint changed", None)
+            return CheckpointValidation(
+                False,
+                CheckpointInvalidity.FINGERPRINT_MISMATCH,
+                "causal fingerprint changed",
+                None,
+            )
         if manifest.state is None:
-            return CheckpointValidation(False, CheckpointInvalidity.MISSING_STATE, "checkpoint state identity is missing", None)
+            return CheckpointValidation(
+                False,
+                CheckpointInvalidity.MISSING_STATE,
+                "checkpoint state identity is missing",
+                None,
+            )
 
         try:
-            state_path = self._validated_internal_path(manifest.state.path, allow_checkpoint=True)
+            state_path = self._validated_internal_path(
+                manifest.state.path, allow_checkpoint=True
+            )
         except ValueError as error:
-            return CheckpointValidation(False, CheckpointInvalidity.INVALID_MANIFEST, str(error), None)
+            return CheckpointValidation(
+                False, CheckpointInvalidity.INVALID_MANIFEST, str(error), None
+            )
         if not state_path.is_file():
-            return CheckpointValidation(False, CheckpointInvalidity.MISSING_STATE, "checkpoint state file is missing", None)
+            return CheckpointValidation(
+                False,
+                CheckpointInvalidity.MISSING_STATE,
+                "checkpoint state file is missing",
+                None,
+            )
         try:
             actual_state_hash = file_sha256(state_path)
         except OSError as error:
-            return CheckpointValidation(False, CheckpointInvalidity.MISSING_STATE, str(error), None)
+            return CheckpointValidation(
+                False, CheckpointInvalidity.MISSING_STATE, str(error), None
+            )
         if actual_state_hash != manifest.state.sha256:
-            return CheckpointValidation(False, CheckpointInvalidity.STATE_HASH_MISMATCH, "checkpoint state hash changed", None)
+            return CheckpointValidation(
+                False,
+                CheckpointInvalidity.STATE_HASH_MISMATCH,
+                "checkpoint state hash changed",
+                None,
+            )
 
         for output in manifest.outputs:
             try:
-                path = self._validated_internal_path(output.path, allow_checkpoint=False)
+                path = self._validated_internal_path(
+                    output.path, allow_checkpoint=False
+                )
             except ValueError as error:
-                return CheckpointValidation(False, CheckpointInvalidity.INVALID_MANIFEST, str(error), None)
+                return CheckpointValidation(
+                    False,
+                    CheckpointInvalidity.INVALID_MANIFEST,
+                    str(error),
+                    None,
+                )
             if not path.is_file():
-                return CheckpointValidation(False, CheckpointInvalidity.MISSING_OUTPUT, f"checkpoint output is missing: {output.path}", None)
+                return CheckpointValidation(
+                    False,
+                    CheckpointInvalidity.MISSING_OUTPUT,
+                    f"checkpoint output is missing: {output.path}",
+                    None,
+                )
             try:
                 actual_hash = file_sha256(path)
             except OSError as error:
-                return CheckpointValidation(False, CheckpointInvalidity.MISSING_OUTPUT, str(error), None)
+                return CheckpointValidation(
+                    False, CheckpointInvalidity.MISSING_OUTPUT, str(error), None
+                )
             if actual_hash != output.sha256:
-                return CheckpointValidation(False, CheckpointInvalidity.OUTPUT_HASH_MISMATCH, f"checkpoint output hash changed: {output.path}", None)
+                return CheckpointValidation(
+                    False,
+                    CheckpointInvalidity.OUTPUT_HASH_MISMATCH,
+                    f"checkpoint output hash changed: {output.path}",
+                    None,
+                )
 
-        expected_result = result_fingerprint(expected_causal, actual_state_hash, manifest.outputs)
+        expected_result = result_fingerprint(
+            expected_causal, actual_state_hash, manifest.outputs
+        )
         if manifest.result_fingerprint != expected_result:
-            return CheckpointValidation(False, CheckpointInvalidity.RESULT_FINGERPRINT_MISMATCH, "result fingerprint changed", None)
+            return CheckpointValidation(
+                False,
+                CheckpointInvalidity.RESULT_FINGERPRINT_MISMATCH,
+                "result fingerprint changed",
+                None,
+            )
 
         try:
             payload = json.loads(state_path.read_text(encoding="utf-8"))
             state = codec.decode(payload, self.outdir)
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError, KeyError) as error:
-            return CheckpointValidation(False, CheckpointInvalidity.INVALID_STATE, str(error), None)
-        return CheckpointValidation(True, None, None, CheckpointLoad(state, manifest))
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            ValueError,
+            TypeError,
+            KeyError,
+        ) as error:
+            return CheckpointValidation(
+                False, CheckpointInvalidity.INVALID_STATE, str(error), None
+            )
+        return CheckpointValidation(
+            True, None, None, CheckpointLoad(state, manifest)
+        )
 
-    def _validated_internal_path(self, relative: str, *, allow_checkpoint: bool) -> Path:
+    def _validated_internal_path(
+        self, relative: str, *, allow_checkpoint: bool
+    ) -> Path:
         candidate = Path(relative)
         if candidate.is_absolute():
-            raise ValueError("checkpoint paths must be relative to the output directory")
+            raise ValueError(
+                "checkpoint paths must be relative to the output directory"
+            )
         resolved_outdir = self.outdir.resolve()
         resolved = (self.outdir / candidate).resolve()
         try:
             rel = resolved.relative_to(resolved_outdir)
         except ValueError as error:
             raise ValueError("checkpoint path escapes the output directory") from error
-        if not allow_checkpoint and rel.parts and rel.parts[0] == ".checkpoints":
+        if (
+            not allow_checkpoint
+            and rel.parts
+            and rel.parts[0] == ".checkpoints"
+        ):
             raise ValueError("scientific output path points inside .checkpoints")
         return resolved
