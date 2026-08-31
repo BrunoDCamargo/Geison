@@ -20,7 +20,9 @@ jobs:
 
       - when:
           condition:
-            equal: [main, << pipeline.git.branch >>]
+            or:
+              - equal: [main, << pipeline.git.branch >>]
+              - equal: [fix/primer3-integration-fixture, << pipeline.git.branch >>]
           steps:
             - run:
                 name: Install integration tools
@@ -46,4 +48,4 @@ workflows:
   ci:
     jobs:
       - test:
-          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
+          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main" or pipeline.git.branch == "fix/primer3-integration-fixture"
