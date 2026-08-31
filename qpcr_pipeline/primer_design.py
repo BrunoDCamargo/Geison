@@ -95,6 +95,16 @@ _ASSAY_HEADER = (
 )
 
 
+def primer3_required(
+    conservation: ConservationResult, config: PrimerDesignConfig
+) -> bool:
+    """Return whether this exact primer-design request will invoke Primer3."""
+    validate_primer_design_config(config)
+    if not config.enabled:
+        return False
+    return bool(_select_candidate_regions(conservation, config))
+
+
 def design_primers(
     conservation: ConservationResult,
     config: PrimerDesignConfig,
