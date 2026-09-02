@@ -26,22 +26,15 @@ jobs:
 
           path = Path("qpcr_pipeline/run_recording.py")
           text = path.read_text(encoding="utf-8")
-          old = '''            {
-                "attempt_id": attempt_id,
-                "status": "RUNNING",
-                "started_at": now,
-'''
-          new = '''            {
-                "attempt_id": attempt_id,
-                "execution_policy": sanitize_diagnostic(execution_policy),
-                "plan": sanitize_diagnostic(plan),
-                "status": "RUNNING",
-                "started_at": now,
-'''
-          count = text.count(old)
+          needle = '                "attempt_id": attempt_id,\n'
+          addition = (
+              '                "execution_policy": sanitize_diagnostic(execution_policy),\n'
+              '                "plan": sanitize_diagnostic(plan),\n'
+          )
+          count = text.count(needle)
           if count != 1:
-              raise SystemExit(f"expected exactly one attempt creation block, got {count}")
-          path.write_text(text.replace(old, new), encoding="utf-8")
+              raise SystemExit(f"expected exactly one attempt id field, got {count}")
+          path.write_text(text.replace(needle, needle + addition, 1), encoding="utf-8")
 
       - name: Verify focused test
         run: |
