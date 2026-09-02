@@ -42,20 +42,65 @@ jobs:
                 name: Run integration test suite
                 command: python -m unittest discover -s integration_tests -q
 
-  issue12_diagnostics:
+  issue12_unit:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run environment identity compatibility test
-          command: python -m pytest tests/test_diagnostics.py::test_inspector_marks_enabled_tools_required_and_blast_not_used -q
+          name: Run full unit suite
+          command: python -m pytest -q
+
+  issue12_integration:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          name: Install integration tools
+          command: |
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              cd-hit \
+              mafft \
+              primer3
+      - run:
+          name: Verify integration tools
+          command: |
+            command -v cd-hit-est
+            command -v mafft
+            command -v primer3_core
+      - run:
+          name: Run integration suite
+          command: python -m unittest discover -s integration_tests -q
+
+  issue12_verify:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          name: Verify patch whitespace
+          command: git diff --check 43b23367bbfaea68fb699512df0511f77de95cff HEAD
+      - run:
+          name: Scan production diagnostics for forbidden payloads
+          command: |
+            if grep -R -n -E 'private-key|researcher@example|ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT' qpcr_pipeline README.md docs/reproducible-runs.md; then
+              echo "Forbidden diagnostic payload found"
+              exit 1
+            fi
 
 workflows:
   ci:
     jobs:
       - test:
           filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
-      - issue12_diagnostics:
+      - issue12_unit:
+          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
+      - issue12_integration:
+          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
+      - issue12_verify:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
