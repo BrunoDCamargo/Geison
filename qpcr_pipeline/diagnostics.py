@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 import subprocess
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -64,19 +65,24 @@ class EnvironmentReport:
 TOOL_PROBES: dict[str, tuple[str, ...]] = {
     "cd-hit-est": ("cd-hit-est", "-h"),
     "mafft": ("mafft", "--version"),
-    "primer3_core": ("primer3_core", "--about"),
+    "primer3_core": ("primer3_core", "--version"),
     "blast+": ("blastn", "-version"),
 }
 
 
-def _bounded_version(result: CommandResult) -> str | None:
-    text = " ".join(
-        line.strip()
-        for chunk in (result.stdout, result.stderr)
-        for line in chunk.splitlines()
-        if line.strip()
-    )
-    return text[:500] or None
+def _normalized_tool_version(tool_name: str, result: CommandResult) -> str | None:
+    text = "\n".join(
+        chunk for chunk in (result.stdout, result.stderr) if chunk
+    )[:10_000]
+    lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
+    if tool_name == "cd-hit-est":
+        for line in lines:
+            match = re.search(r"CD-HIT\s+version\s+([^\s,;]+)", line, re.IGNORECASE)
+            if match:
+                return match.group(1)
+    if lines:
+        return lines[0][:500]
+    return None
 
 
 class EnvironmentInspector:
@@ -153,7 +159,7 @@ class EnvironmentInspector:
                 status=status,
                 required=required[name],
                 installed=installed,
-                version=_bounded_version(result) if installed else None,
+                version=_normalized_tool_version(name, result) if installed else None,
             )
 
         return EnvironmentReport(
