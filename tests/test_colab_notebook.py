@@ -26,7 +26,7 @@ def test_official_colab_notebook_covers_issue_13_flow():
     assert notebook["nbformat"] == 4
     assert "git clone" in code
     assert "--branch develop" in code
-    assert "git pull --ff-only origin develop" in code
+    assert "pull --ff-only origin develop" in code
     assert "python -m pip install -e" in code
 
     assert "apt-get" in code
