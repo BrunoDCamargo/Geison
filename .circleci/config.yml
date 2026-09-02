@@ -42,44 +42,32 @@ jobs:
                 name: Run integration test suite
                 command: python -m unittest discover -s integration_tests -q
 
-  issue12_a_g:
+  issue12_h_m:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run tests A through G
-          command: python -m pytest tests/test_[a-g]*.py -q
+          name: Run tests H through M
+          command: python -m pytest tests/test_[h-m]*.py -q
 
-  issue12_h_p:
+  issue12_n_p:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run tests H through P
-          command: python -m pytest tests/test_[h-p]*.py -q
-
-  issue12_q_z:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run tests Q through Z
-          command: python -m pytest tests/test_[q-z]*.py -q
+          name: Run tests N through P
+          command: python -m pytest tests/test_[n-p]*.py -q
 
 workflows:
   ci:
     jobs:
       - test:
           filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
-      - issue12_a_g:
+      - issue12_h_m:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
-      - issue12_h_p:
-          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
-      - issue12_q_z:
+      - issue12_n_p:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
