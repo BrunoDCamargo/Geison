@@ -54,6 +54,16 @@ class PipelineCliTests(unittest.TestCase):
         self.assertIn("BLAST+", result.stdout)
         self.assertIn("NOT_USED", result.stdout)
 
+    def test_dry_run_validates_without_creating_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "planned-run"
+            result = self._run(tmpdir, "--dry-run", "--outdir", str(outdir))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("input", result.stdout)
+            self.assertIn("RUN", result.stdout)
+            self.assertFalse(outdir.exists())
+
     def test_resume_runs_with_outdir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
