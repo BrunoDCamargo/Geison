@@ -41,6 +41,22 @@ def _sha256_identity(value: object) -> str | None:
     return None
 
 
+def _project_source_request(source: Mapping[str, object], source_mode: str) -> dict[str, object]:
+    if source_mode == "accessions":
+        accessions = source.get("requested_accessions")
+        if (
+            not isinstance(accessions, list)
+            or any(not isinstance(item, str) or not item for item in accessions)
+        ):
+            raise ValueError("NCBI dataset requested accessions are invalid.")
+        return {"requested_accessions": list(accessions)}
+
+    query = source.get("query")
+    if not isinstance(query, str) or not query:
+        raise ValueError("NCBI dataset query provenance is invalid.")
+    return {"query": query}
+
+
 def _ncbi_manifest_projection(
     config: PipelineConfig,
     outdir: Path,
@@ -93,6 +109,7 @@ def _ncbi_manifest_projection(
     if selected.frozen_dataset is not None:
         result["source_dataset_mode"] = source_mode
         result["configured_path"] = str(selected.frozen_dataset)
+        result.update(_project_source_request(source, source_mode))
         manifest_sha256 = _sha256_identity(checkpoint_source.get("manifest_sha256"))
         if manifest_sha256 is not None:
             result["source_manifest_sha256"] = manifest_sha256
