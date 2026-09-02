@@ -48,6 +48,18 @@ def test_official_colab_notebook_covers_issue_13_flow():
     assert "report.html" in markdown.lower()
 
 
+def test_colab_runs_doctor_and_analysis_from_repository_checkout():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+
+    repo_change = code.find("%cd /content/Geison")
+    doctor = code.find("qpcr-pipeline doctor")
+    run = code.find("qpcr-pipeline run")
+
+    assert repo_change >= 0
+    assert repo_change < doctor < run
+
+
 def test_colab_notebook_sets_ncbi_environment_without_exposing_scientific_logic():
     notebook = _load_notebook()
     code = _cell_text(notebook, "code")
