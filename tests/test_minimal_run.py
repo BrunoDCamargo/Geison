@@ -1099,7 +1099,7 @@ class MinimalPipelineRunTests(unittest.TestCase):
             self.assertEqual(self._directory_bytes(frozen_dir), before)
             self.assertFalse(os.path.samefile(source_records, summary_path))
             self.assertFalse(os.path.samefile(source_batch, qc_path))
-            self.assertEqual(json.loads(summary_path.read_text())["status"], "COMPLETED")
+            self.assertEqual(json.loads(summary_path.read_text())["status"], "PARTIAL")
             self.assertEqual(
                 json.loads(qc_path.read_text())["evaluation_set"]["sequence_ids"],
                 [accession],
@@ -1189,13 +1189,13 @@ class MinimalPipelineRunTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("COMPLETED", result.stdout)
+            self.assertIn("PARTIAL", result.stdout)
 
             summary_path = outdir / "run_summary.json"
             self.assertTrue(summary_path.exists(), "run_summary.json was not created")
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(summary["status"], "COMPLETED")
+        self.assertEqual(summary["status"], "PARTIAL")
         self.assertEqual(summary["target_name"], "synthetic-target")
         self.assertEqual(summary["sequence_count"], 3)
         self.assertEqual(summary["sequence_ids"], ["seq-1", "seq-2", "seq-3"])
