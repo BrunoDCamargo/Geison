@@ -21,6 +21,16 @@ qpcr-pipeline doctor
 
 Use o resultado do `doctor` para confirmar as versões e a disponibilidade das dependências antes de iniciar uma run.
 
+## Identificação para aquisição NCBI
+
+Aquisição NCBI ao vivo exige a variável de ambiente `NCBI_EMAIL`. O notebook solicita esse e-mail antes da primeira execução científica e o mantém somente no ambiente da sessão:
+
+```python
+os.environ["NCBI_EMAIL"] = ncbi_email
+```
+
+`NCBI_API_KEY` é opcional. Quando informada, a chave é lida de forma oculta e também fica apenas no ambiente da sessão. E-mail e API key não são colocados no YAML, manifestos ou relatórios do Geison.
+
 ## Atualizar uma sessão existente
 
 Se `/content/Geison` já existir, a célula de preparação atualiza o checkout com fast-forward e reinstala o pacote editável:
