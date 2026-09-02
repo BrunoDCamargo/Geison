@@ -14,7 +14,9 @@ from qpcr_pipeline.config import (
     RankingConfig,
     SpecificityConfig,
 )
+from qpcr_pipeline.models import EvaluationSet, TargetSequenceSet
 from qpcr_pipeline.pipeline import run_pipeline
+from qpcr_pipeline.qc import QCResult
 from qpcr_pipeline.ranking import evaluate_ranking as real_evaluate_ranking
 from pipeline_checkpoint_fixtures import (
     checkpoint_alignment,
@@ -112,8 +114,12 @@ class PipelineRankingTests(unittest.TestCase):
             off_target.write_text(">off\nACGT\n", encoding="utf-8")
             patches = self._base_upstream_patches(output, primer, inclusivity, specificity)
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
-                run_pipeline(self._enabled_config(off_target), output)
+                summary = run_pipeline(self._enabled_config(off_target), output)
             qc = json.loads((output / "qc_report.json").read_text(encoding="utf-8"))
+            manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary.status, "COMPLETED")
+            self.assertEqual(manifest["status"], "COMPLETED")
+            self.assertEqual(manifest["scientific_completeness"]["missing_evidence"], [])
             self.assertEqual(qc["ranking"]["status"], "COMPLETE")
             self.assertEqual(qc["ranking"]["assay_count"], 1)
             self.assertEqual(qc["ranking"]["in_silico_pass_count"], 1)
@@ -125,6 +131,39 @@ class PipelineRankingTests(unittest.TestCase):
             self.assertTrue((output / "ranking" / "assay_ranking.tsv").exists())
             self.assertTrue((output / "ranking" / "ranking_report.json").exists())
             self.assertTrue((output / "report.html").exists())
+
+    def test_incomplete_run_evidence_blocks_pass_before_ranking_artifacts(self):
+        primer = make_primer_result()
+        inclusivity = make_inclusivity_result(primer)
+        specificity = make_specificity_result(primer)
+        empty_qc = QCResult(
+            records=(),
+            target_sequence_set=TargetSequenceSet(sequence_ids=()),
+            evaluation_set=EvaluationSet(sequence_ids=()),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output = root / "out"
+            off_target = root / "off.fa"
+            off_target.write_text(">off\nACGT\n", encoding="utf-8")
+            patches = self._base_upstream_patches(output, primer, inclusivity, specificity)
+            with (
+                patch("qpcr_pipeline.pipeline.evaluate_sequences", return_value=empty_qc),
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+            ):
+                summary = run_pipeline(self._enabled_config(off_target), output)
+            ranking_report = json.loads(
+                (output / "ranking" / "ranking_report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary.status, "PARTIAL")
+            self.assertEqual(ranking_report["counts"]["in_silico_pass"], 0)
+            self.assertEqual(ranking_report["counts"]["review"], 1)
+            self.assertEqual(ranking_report["counts"]["incomplete_score"], 1)
 
     def test_review_only_pipeline_never_promotes_review_to_recommended(self):
         primer = make_primer_result()
