@@ -4,7 +4,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
-from qpcr_pipeline.ncbi import NcbiFetchedRecord, acquire_ncbi_dataset
+from qpcr_pipeline.ncbi import NcbiFetchedRecord, ResolvedNcbiQuery, acquire_ncbi_dataset
 from qpcr_pipeline.pipeline import run_pipeline
 
 
@@ -26,6 +26,28 @@ class ProvenanceNcbiClient:
             record.annotations["molecule_type"] = "DNA"
             rows.append(NcbiFetchedRecord(request_id=identifier, record=record))
         return tuple(rows)
+
+
+class QueryProvenanceNcbiClient:
+    def resolve_query(self, query, max_records):
+        assert query == "synthetic target[Title]"
+        assert max_records == 1
+        return ResolvedNcbiQuery(
+            uids=("12345",),
+            reported_count=1,
+            query_translation="synthetic target[Title]",
+        )
+
+    def fetch_records(self, identifiers, *, identifier_kind):
+        assert identifiers == ("12345",)
+        assert identifier_kind == "uid"
+        record = SeqRecord(
+            Seq("ACGTACGTACGT"),
+            id="NC_000002.2",
+            name="NC_000002",
+        )
+        record.annotations["molecule_type"] = "DNA"
+        return (NcbiFetchedRecord(request_id="12345", record=record),)
 
 
 def test_successful_incomplete_fixture_is_partial_and_has_manifest(tmp_path):
@@ -80,6 +102,33 @@ def test_ncbi_run_records_request_and_resolved_accession_versions(tmp_path):
     assert "completed_batches" not in serialized
     assert "record_ids" not in serialized
     assert "NCBI_API_KEY" not in serialized
+
+
+def test_query_ncbi_run_records_query_without_internal_resolution_details(tmp_path):
+    config = PipelineConfig(
+        target_name="target",
+        input_ncbi=NcbiInputConfig(
+            query="synthetic target[Title]",
+            max_records=1,
+            retries=0,
+        ),
+    )
+    outdir = tmp_path / "run"
+
+    run_pipeline(config, outdir, ncbi_client=QueryProvenanceNcbiClient())
+
+    manifest = json.loads((outdir / "run_manifest.json").read_text(encoding="utf-8"))
+    provenance = manifest["input_provenance"]
+    assert provenance["kind"] == "ncbi"
+    assert provenance["mode"] == "query"
+    assert provenance["query"] == "synthetic target[Title]"
+    assert provenance["resolved_accession_versions"] == ["NC_000002.2"]
+    assert provenance["dataset_sha256"].startswith("sha256:")
+    serialized = json.dumps(provenance)
+    assert "resolved_uids" not in serialized
+    assert "query_translation" not in serialized
+    assert "completed_batches" not in serialized
+    assert "record_ids" not in serialized
 
 
 def test_frozen_ncbi_run_records_dataset_identity_without_internal_batches(tmp_path):
