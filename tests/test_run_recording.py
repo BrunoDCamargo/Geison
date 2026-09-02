@@ -3,6 +3,29 @@ import json
 from qpcr_pipeline.run_recording import RunRecorder
 
 
+def test_begin_attempt_logs_environment_and_plan_creation(tmp_path):
+    ids = iter(("run-1", "attempt-1"))
+    recorder = RunRecorder(
+        tmp_path,
+        clock=lambda: "2026-08-31T00:00:00Z",
+        id_factory=lambda: next(ids),
+    )
+
+    recorder.begin_attempt(
+        "target",
+        {},
+        {"resume": False},
+        {"python": {"version": "3.12"}},
+        [{"stage": "input", "action": "RUN"}],
+    )
+
+    events = [
+        json.loads(line)["event"]
+        for line in (tmp_path / "run.log.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == ["run_started", "environment_inspected", "plan_created"]
+
+
 def test_resume_retains_run_identity_and_appends_attempt(tmp_path):
     ids = iter(("run-1", "attempt-1", "attempt-2"))
     recorder = RunRecorder(
