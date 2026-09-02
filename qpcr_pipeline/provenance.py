@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Mapping
 
 from qpcr_pipeline.config import PipelineConfig
 from qpcr_pipeline.run_recording import sanitize_diagnostic
+
+
+_SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 def effective_config_payload(config: PipelineConfig) -> dict[str, object]:
@@ -25,6 +29,16 @@ def _qc_counts(qc_result: object) -> dict[str, int]:
         "accepted_count": accepted,
         "rejected_count": max(0, len(records) - accepted),
     }
+
+
+def _sha256_identity(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if value.startswith("sha256:") and _SHA256_HEX.fullmatch(value[7:]):
+        return "sha256:" + value[7:].lower()
+    if _SHA256_HEX.fullmatch(value):
+        return "sha256:" + value.lower()
+    return None
 
 
 def _ncbi_manifest_projection(
@@ -58,10 +72,10 @@ def _ncbi_manifest_projection(
             raise ValueError("NCBI resolved provenance accession version is invalid.")
         resolved_versions.append(accession_version)
 
-    dataset_sha256 = checkpoint_source.get("records_sha256")
-    if not isinstance(dataset_sha256, str) or not dataset_sha256.startswith("sha256:"):
-        dataset_sha256 = consolidated.get("sha256")
-    if not isinstance(dataset_sha256, str) or not dataset_sha256.startswith("sha256:"):
+    dataset_sha256 = _sha256_identity(checkpoint_source.get("records_sha256"))
+    if dataset_sha256 is None:
+        dataset_sha256 = _sha256_identity(consolidated.get("sha256"))
+    if dataset_sha256 is None:
         raise ValueError("NCBI dataset provenance is missing a SHA-256 identity.")
 
     source_mode = source.get("mode")
@@ -79,8 +93,8 @@ def _ncbi_manifest_projection(
     if selected.frozen_dataset is not None:
         result["source_dataset_mode"] = source_mode
         result["configured_path"] = str(selected.frozen_dataset)
-        manifest_sha256 = checkpoint_source.get("manifest_sha256")
-        if isinstance(manifest_sha256, str) and manifest_sha256.startswith("sha256:"):
+        manifest_sha256 = _sha256_identity(checkpoint_source.get("manifest_sha256"))
+        if manifest_sha256 is not None:
             result["source_manifest_sha256"] = manifest_sha256
     elif selected.query is not None:
         result["query"] = selected.query
@@ -107,8 +121,8 @@ def build_input_provenance(
 
     if isinstance(selected, tuple):
         path, input_format = selected
-        source_sha256 = source.get("sha256")
-        if not isinstance(source_sha256, str) or not source_sha256.startswith("sha256:"):
+        source_sha256 = _sha256_identity(source.get("sha256"))
+        if source_sha256 is None:
             raise ValueError("Local input checkpoint is missing its source SHA-256 identity.")
         return {
             "kind": input_format,
