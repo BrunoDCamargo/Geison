@@ -42,32 +42,56 @@ jobs:
                 name: Run integration test suite
                 command: python -m unittest discover -s integration_tests -q
 
-  issue12_h_m:
+  issue12_minimal:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run tests H through M
-          command: python -m pytest tests/test_[h-m]*.py -q
+          name: Run minimal pipeline tests
+          command: python -m pytest tests/test_minimal_run.py -q
 
-  issue12_n_p:
+  issue12_hm_rest:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run tests N through P
-          command: python -m pytest tests/test_[n-p]*.py -q
+          name: Run H-M scientific tests
+          command: python -m pytest tests/test_inclusivity.py tests/test_iupac.py tests/test_local_input.py tests/test_mafft_lowercase_output.py -q
+
+  issue12_pipeline:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          name: Run pipeline regression tests
+          command: python -m pytest tests/test_pipeline_ranking.py tests/test_pipeline_resume.py tests/test_pipeline_specificity.py -q
+
+  issue12_np_rest:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          name: Run N-P scientific tests
+          command: python -m pytest tests/test_ncbi_acquisition.py tests/test_primer3.py tests/test_primer_design.py -q
 
 workflows:
   ci:
     jobs:
       - test:
           filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
-      - issue12_h_m:
+      - issue12_minimal:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
-      - issue12_n_p:
+      - issue12_hm_rest:
+          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
+      - issue12_pipeline:
+          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
+      - issue12_np_rest:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
