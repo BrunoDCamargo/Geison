@@ -42,8 +42,23 @@ jobs:
                 name: Run integration test suite
                 command: python -m unittest discover -s integration_tests -q
 
+  issue13_doctor_fix:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Install project and pytest
+          command: python -m pip install -e . pytest
+      - run:
+          name: Run doctor and Colab regression tests
+          command: python -m pytest tests/test_diagnostics.py tests/test_colab_notebook.py -q
+
 workflows:
   ci:
     jobs:
       - test:
           filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
+      - issue13_doctor_fix:
+          filters: pipeline.git.branch == "fix/issue-13-colab-doctor"
