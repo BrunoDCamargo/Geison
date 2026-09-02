@@ -42,20 +42,20 @@ jobs:
                 name: Run integration test suite
                 command: python -m unittest discover -s integration_tests -q
 
-  issue12_dry_run:
+  issue12_diagnostics:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run dry-run binary probe guard
-          command: python -m pytest tests/test_dry_run.py::test_resume_dry_run_reuses_environment_tool_identity_without_probing_binaries -q
+          name: Run environment identity compatibility test
+          command: python -m pytest tests/test_diagnostics.py::test_inspector_marks_enabled_tools_required_and_blast_not_used -q
 
 workflows:
   ci:
     jobs:
       - test:
           filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
-      - issue12_dry_run:
+      - issue12_diagnostics:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
