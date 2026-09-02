@@ -115,7 +115,9 @@ jobs:
       - checkout
       - run:
           name: Check diff whitespace
-          command: git diff --check develop...HEAD
+          command: |
+            git fetch --no-tags --depth=1 origin develop
+            git diff --check FETCH_HEAD..HEAD
 
 workflows:
   ci:
