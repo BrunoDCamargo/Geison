@@ -154,6 +154,7 @@ def test_frozen_ncbi_run_records_dataset_identity_without_internal_batches(tmp_p
     assert provenance["kind"] == "ncbi"
     assert provenance["mode"] == "frozen_dataset"
     assert provenance["source_dataset_mode"] == "accessions"
+    assert provenance["requested_accessions"] == ["NC_000001.1"]
     assert provenance["dataset_sha256"].startswith("sha256:")
     assert provenance["source_manifest_sha256"].startswith("sha256:")
     assert provenance["resolved_accession_versions"] == ["NC_000001.1"]
