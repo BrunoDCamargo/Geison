@@ -22,6 +22,7 @@ from qpcr_pipeline.checkpointing import CheckpointManager, CheckpointManifest
 from qpcr_pipeline.clustering import CdHitRunner, cluster_sequences
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
 from qpcr_pipeline.conservation import analyze_conservation
+from qpcr_pipeline.diagnostics import EnvironmentInspector
 from qpcr_pipeline.execution import (
     STAGE_ORDER,
     ExecutionPolicy,
@@ -35,6 +36,11 @@ from qpcr_pipeline.primer3 import Primer3Runner
 from qpcr_pipeline.primer_design import design_primers
 from qpcr_pipeline.qc import evaluate_sequences
 from qpcr_pipeline.ranking import evaluate_ranking
+from qpcr_pipeline.run_recording import (
+    RunRecorder,
+    assess_final_completeness,
+    assess_pre_ranking_completeness,
+)
 from qpcr_pipeline.specificity import evaluate_specificity
 
 
@@ -102,6 +108,15 @@ def run_pipeline(
             output_dir, selected_input.frozen_dataset
         )
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    recorder = RunRecorder(output_dir)
+    recorder.begin_attempt(
+        config.target_name,
+        config,
+        policy,
+        EnvironmentInspector().inspect(config),
+        [],
+    )
 
     base_tool_provider = tool_identity_provider or SubprocessToolIdentityProvider()
     effective_tool_provider = _EffectiveToolIdentityProvider(
@@ -229,9 +244,25 @@ def run_pipeline(
     specificity = results["specificity"]
     ranking = results["ranking"]
 
+    pre_ranking_completeness = assess_pre_ranking_completeness(
+        evaluation_sequence_count=len(qc_result.evaluation_set.sequence_ids),
+        assay_count=len(primer_design.assays),
+        inclusivity_status=inclusivity.status,
+        specificity_status=specificity.status,
+    )
+    scientific_completeness = assess_final_completeness(
+        pre_ranking_completeness,
+        ranking_status=ranking.status,
+    )
+    final_status = "COMPLETED" if scientific_completeness.complete else "PARTIAL"
+    if not scientific_completeness.complete and any(
+        assay.classification == "IN SILICO PASS" for assay in ranking.assays
+    ):
+        raise RuntimeError("Incomplete run evidence cannot produce IN SILICO PASS.")
+
     approved_ids = qc_result.evaluation_set.sequence_ids
     summary = RunSummary(
-        status="COMPLETED",
+        status=final_status,
         target_name=config.target_name,
         sequence_count=len(approved_ids),
         sequence_ids=list(approved_ids),
@@ -333,6 +364,19 @@ def run_pipeline(
 
     _write_json_atomic(output_dir / "run_summary.json", asdict(summary))
     _write_json_atomic(output_dir / "qc_report.json", qc_report)
+    for action in actions:
+        checkpoint_path = output_dir / ".checkpoints" / action.stage / "manifest.json"
+        if action.action == "REUSE":
+            recorder.stage_reused(action.stage, action.action, checkpoint_path)
+        else:
+            recorder.stage_started(action.stage, action.action)
+            recorder.stage_completed(action.stage, action.action, checkpoint_path)
+    recorder.complete(
+        final_status,
+        scientific_completeness,
+        {},
+        {"id": alignment.reference_id, "mode": alignment.reference_mode},
+    )
     return summary
 
 
