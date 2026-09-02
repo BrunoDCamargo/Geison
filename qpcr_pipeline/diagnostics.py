@@ -62,11 +62,11 @@ class EnvironmentReport:
         )
 
 
-TOOL_PROBES: dict[str, tuple[str, ...]] = {
-    "cd-hit-est": ("cd-hit-est", "-h"),
-    "mafft": ("mafft", "--version"),
-    "primer3_core": ("primer3_core", "--version"),
-    "blast+": ("blastn", "-version"),
+TOOL_PROBES: dict[str, tuple[tuple[str, ...], frozenset[int]]] = {
+    "cd-hit-est": (("cd-hit-est", "-h"), frozenset({0, 1})),
+    "mafft": (("mafft", "--version"), frozenset({0})),
+    "primer3_core": (("primer3_core", "--about"), frozenset({0})),
+    "blast+": (("blastn", "-version"), frozenset({0})),
 }
 
 
@@ -145,9 +145,9 @@ class EnvironmentInspector:
             "blast+": False,
         }
         tools: dict[str, ComponentReport] = {}
-        for name, probe in TOOL_PROBES.items():
+        for name, (probe, success_codes) in TOOL_PROBES.items():
             result = self.runner.run(probe)
-            installed = result.returncode == 0
+            installed = result.returncode in success_codes
             if name == "blast+":
                 status = "NOT_USED"
             elif installed:
