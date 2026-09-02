@@ -42,8 +42,23 @@ jobs:
                 name: Run integration test suite
                 command: python -m unittest discover -s integration_tests -q
 
+  issue13_colab_contract:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Install pytest
+          command: python -m pip install pytest
+      - run:
+          name: Run Colab notebook contract tests
+          command: python -m pytest tests/test_colab_notebook.py -q
+
 workflows:
   ci:
     jobs:
       - test:
           filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
+      - issue13_colab_contract:
+          filters: pipeline.git.branch == "feature/issue-13-colab"
