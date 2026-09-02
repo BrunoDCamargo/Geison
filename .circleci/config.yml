@@ -1,7 +1,7 @@
 version: 2.1
 
 jobs:
-  issue12_logging_red:
+  issue12_final:
     docker:
       - image: cimg/python:3.12
     resource_class: small
@@ -13,11 +13,31 @@ jobs:
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
       - run:
-          name: Run logging lifecycle test
-          command: python -m pytest tests/test_run_recording.py::test_begin_attempt_logs_environment_and_plan_creation -q
+          name: Run full unit test suite
+          command: python -m pytest -q
+      - run:
+          name: Install integration tools
+          command: |
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              cd-hit \
+              mafft \
+              primer3
+      - run:
+          name: Verify integration tools
+          command: |
+            command -v cd-hit-est
+            command -v mafft
+            command -v primer3_core
+      - run:
+          name: Run integration test suite
+          command: python -m unittest discover -s integration_tests -q
+      - run:
+          name: Verify clean diff formatting
+          command: git diff --check
 
 workflows:
   ci:
     jobs:
-      - issue12_logging_red:
+      - issue12_final:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
