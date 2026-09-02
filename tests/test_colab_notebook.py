@@ -48,6 +48,16 @@ def test_official_colab_notebook_covers_issue_13_flow():
     assert "report.html" in markdown.lower()
 
 
+def test_colab_notebook_sets_ncbi_environment_without_exposing_scientific_logic():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+
+    assert "NCBI_EMAIL" in code
+    assert "NCBI_API_KEY" in code
+    assert "os.environ" in code
+    assert code.index("NCBI_EMAIL") < code.index("qpcr-pipeline run")
+
+
 def test_colab_notebook_delegates_scientific_work_to_geison_cli():
     notebook = _load_notebook()
     code = _cell_text(notebook, "code")
@@ -67,5 +77,6 @@ def test_colab_flow_has_operational_documentation():
     assert "notebooks/geison_colab.ipynb" in text
     assert "git pull --ff-only origin develop" in text
     assert "qpcr-pipeline doctor" in text
+    assert "NCBI_EMAIL" in text
     assert "--resume" in text
     assert "report.html" in text
