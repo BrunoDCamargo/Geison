@@ -41,6 +41,19 @@ class PipelineCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("synthetic-target", result.stdout)
 
+    def test_doctor_command_runs_without_configuration(self):
+        result = subprocess.run(
+            [self._executable(), "doctor"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Python", result.stdout)
+        self.assertIn("BLAST+", result.stdout)
+        self.assertIn("NOT_USED", result.stdout)
+
     def test_resume_runs_with_outdir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             outdir = Path(tmpdir) / "run"
