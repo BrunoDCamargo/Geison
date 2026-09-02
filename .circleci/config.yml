@@ -18,7 +18,7 @@ jobs:
           name: Run test suite
           command: |
             if [ "$CIRCLE_BRANCH" = "feature/issue-12-reproducibility-diagnostics" ]; then
-              python -m pytest tests/test_run_manifest.py -q
+              python -m pytest tests/test_pipeline_resume.py tests/test_cli.py tests/test_pipeline_ranking.py tests/test_ranking_execution_guard.py tests/test_run_manifest.py -q
             else
               python -m pytest -q
             fi
