@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 from qpcr_pipeline.config import load_config
+from qpcr_pipeline.diagnostics import EnvironmentInspector, doctor_exit_code, render_environment_report
 from qpcr_pipeline.execution import ExecutionPolicy, STAGE_ORDER
 from qpcr_pipeline.pipeline import run_pipeline
 
@@ -9,6 +10,8 @@ from qpcr_pipeline.pipeline import run_pipeline
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qpcr-pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("doctor", help="Inspect the Geison execution environment")
 
     run_parser = subparsers.add_parser(
         "run", help="Run or validate the qPCR pipeline configuration"
@@ -37,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command == "doctor":
+        report = EnvironmentInspector().inspect()
+        print(render_environment_report(report))
+        return doctor_exit_code(report)
 
     if args.command == "run":
         config = load_config(args.config)
