@@ -4,6 +4,27 @@ Pipeline para desenho e avaliação in silico de ensaios qPCR/RT-qPCR.
 
 O desenvolvimento ativo acontece na branch `develop`.
 
+## Reprodutibilidade e diagnóstico
+
+Antes de executar um pipeline, o ambiente pode ser inspecionado sem configuração e sem acesso à rede:
+
+```bash
+qpcr-pipeline doctor
+```
+
+Para validar a configuração e visualizar as decisões `RUN`, `REUSE` e `FORCED` sem executar etapas científicas ou gravar artefatos:
+
+```bash
+qpcr-pipeline run config.yaml --dry-run
+qpcr-pipeline run config.yaml --dry-run --outdir run
+```
+
+Uma execução com `--outdir` registra `run_manifest.json` e `run.log.jsonl`, além dos resumos já publicados pelo pipeline. O estado final da run é `COMPLETED`, `PARTIAL` ou `FAILED`. Uma run `PARTIAL` nunca pode publicar `IN SILICO PASS`; evidência incompleta força revisão/incompletude no ranking. Em uma retomada, o mesmo `run_id` é preservado e uma nova tentativa é acrescentada ao histórico.
+
+O `doctor` reporta BLAST+ como `NOT_USED` e não obrigatório. O `--dry-run` não consulta o NCBI, não cria ou modifica o diretório de saída e não executa CD-HIT, MAFFT ou Primer3. Os resultados continuam sendo evidência in silico e não substituem validação experimental do ensaio.
+
+Detalhes sobre manifesto, log sanitizado, proveniência, estados finais e retomada estão em [`docs/reproducible-runs.md`](docs/reproducible-runs.md).
+
 ## Checkpoints e retomada
 
 Toda execução com `--outdir` grava checkpoints internos por etapa em
