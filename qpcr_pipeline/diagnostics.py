@@ -162,3 +162,38 @@ class EnvironmentInspector:
             git=git_report,
             tools=tools,
         )
+
+
+def _component_rows(report: EnvironmentReport) -> tuple[ComponentReport, ...]:
+    return (
+        report.python,
+        report.geison,
+        report.git,
+        *report.tools.values(),
+    )
+
+
+def render_environment_report(report: EnvironmentReport) -> str:
+    rows = [("Component", "Status", "Required", "Version")]
+    for component in _component_rows(report):
+        display_name = "BLAST+" if component.name == "blast+" else component.name
+        rows.append(
+            (
+                display_name,
+                component.status,
+                "yes" if component.required else "no",
+                component.version or "-",
+            )
+        )
+
+    widths = [max(len(row[index]) for row in rows) for index in range(4)]
+    return "\n".join(
+        "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip()
+        for row in rows
+    )
+
+
+def doctor_exit_code(report: EnvironmentReport) -> int:
+    if not report.python.installed or not report.geison.installed:
+        return 1
+    return 0
