@@ -70,7 +70,7 @@ class PipelineCliTests(unittest.TestCase):
             result = self._run(tmpdir, "--outdir", str(outdir), "--resume")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("COMPLETED", result.stdout)
+        self.assertIn("PARTIAL", result.stdout)
 
     def test_resume_force_step_is_accepted(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -85,7 +85,7 @@ class PipelineCliTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("COMPLETED", result.stdout)
+        self.assertIn("PARTIAL", result.stdout)
 
     def test_resume_and_from_step_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmpdir:

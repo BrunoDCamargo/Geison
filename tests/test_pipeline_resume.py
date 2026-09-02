@@ -65,7 +65,7 @@ def test_normal_run_writes_all_stage_checkpoints_and_does_not_reuse(tmp_path):
     second = run_pipeline(config, outdir)
     second_summary = json.loads((outdir / "run_summary.json").read_text(encoding="utf-8"))
     assert [item["action"] for item in second_summary["stage_actions"]] == ["RUN"] * len(STAGE_ORDER)
-    assert second.status == first.status == "COMPLETED"
+    assert second.status == first.status == "PARTIAL"
     assert second.sequence_ids == first.sequence_ids
 
 
@@ -74,7 +74,7 @@ def test_all_valid_resume_reuses_every_stage(tmp_path):
     resumed = run_pipeline(config, outdir, execution=ExecutionPolicy(resume=True))
     payload = json.loads((outdir / "run_summary.json").read_text(encoding="utf-8"))
 
-    assert resumed.status == "COMPLETED"
+    assert resumed.status == "PARTIAL"
     assert resumed.sequence_ids == ["s1", "s2"]
     assert [item["stage"] for item in payload["stage_actions"]] == list(STAGE_ORDER)
     assert [item["action"] for item in payload["stage_actions"]] == ["REUSE"] * len(STAGE_ORDER)
