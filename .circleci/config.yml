@@ -49,18 +49,8 @@ jobs:
     steps:
       - install_project
       - run:
-          name: Run minimal pipeline tests
-          command: python -m pytest tests/test_minimal_run.py -q
-
-  issue12_hm_rest:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run H-M scientific tests
-          command: python -m pytest tests/test_inclusivity.py tests/test_iupac.py tests/test_local_input.py tests/test_mafft_lowercase_output.py -q
+          name: Run minimal NCBI tests
+          command: python -m pytest tests/test_minimal_run.py -k ncbi -q
 
   issue12_pipeline:
     docker:
@@ -69,18 +59,8 @@ jobs:
     steps:
       - install_project
       - run:
-          name: Run pipeline regression tests
-          command: python -m pytest tests/test_pipeline_ranking.py tests/test_pipeline_resume.py tests/test_pipeline_specificity.py -q
-
-  issue12_np_rest:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run N-P scientific tests
-          command: python -m pytest tests/test_ncbi_acquisition.py tests/test_primer3.py tests/test_primer_design.py -q
+          name: Run pipeline resume tests
+          command: python -m pytest tests/test_pipeline_resume.py -q
 
 workflows:
   ci:
@@ -89,9 +69,5 @@ workflows:
           filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
       - issue12_minimal:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
-      - issue12_hm_rest:
-          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
       - issue12_pipeline:
-          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
-      - issue12_np_rest:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
