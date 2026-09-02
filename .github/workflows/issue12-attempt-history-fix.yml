@@ -1,0 +1,59 @@
+name: Issue 12 attempt history fix
+
+on:
+  push:
+    branches:
+      - feature/issue-12-reproducibility-diagnostics
+    paths:
+      - .github/workflows/issue12-attempt-history-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/issue-12-reproducibility-diagnostics
+
+      - name: Preserve policy and plan per attempt
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("qpcr_pipeline/run_recording.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''            {
+                "attempt_id": attempt_id,
+                "status": "RUNNING",
+                "started_at": now,
+'''
+          new = '''            {
+                "attempt_id": attempt_id,
+                "execution_policy": sanitize_diagnostic(execution_policy),
+                "plan": sanitize_diagnostic(plan),
+                "status": "RUNNING",
+                "started_at": now,
+'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f"expected exactly one attempt creation block, got {count}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+
+      - name: Verify focused test
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+          python -m pytest tests/test_run_recording.py::test_attempt_history_preserves_execution_policy_and_plan -q
+          git diff --check
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add qpcr_pipeline/run_recording.py
+          git commit -m "fix: preserve execution policy and plan per attempt"
+          git push origin HEAD:${GITHUB_REF_NAME}
