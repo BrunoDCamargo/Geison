@@ -1,9 +1,12 @@
 import json
 
+import pytest
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
+import qpcr_pipeline.pipeline as pipeline_module
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
+from qpcr_pipeline.execution import ExecutionPolicy
 from qpcr_pipeline.ncbi import NcbiFetchedRecord, ResolvedNcbiQuery, acquire_ncbi_dataset
 from qpcr_pipeline.pipeline import run_pipeline
 
@@ -157,3 +160,47 @@ def test_frozen_ncbi_run_records_dataset_identity_without_internal_batches(tmp_p
     serialized = json.dumps(provenance)
     assert "completed_batches" not in serialized
     assert "record_ids" not in serialized
+
+
+def test_failed_attempt_is_preserved_when_resume_completes(tmp_path, monkeypatch):
+    config = _minimal_config(tmp_path)
+    outdir = tmp_path / "run"
+    original = pipeline_module._run_stage
+    failed_once = {"value": False}
+
+    def interrupt(stage, *args, **kwargs):
+        if stage == "alignment" and not failed_once["value"]:
+            failed_once["value"] = True
+            raise RuntimeError("alignment failed for " + "ACGT" * 50)
+        return original(stage, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "_run_stage", interrupt)
+
+    with pytest.raises(RuntimeError, match="alignment failed"):
+        run_pipeline(config, outdir)
+
+    failed = json.loads((outdir / "run_manifest.json").read_text(encoding="utf-8"))
+    run_id = failed["run_id"]
+    assert failed["status"] == "FAILED"
+    assert failed["failure"]["stage"] == "alignment"
+    assert failed["attempts"][0]["status"] == "FAILED"
+    assert "ACGTACGTACGT" not in json.dumps(failed)
+    assert not (outdir / "run_summary.json").exists()
+    assert not (outdir / "qc_report.json").exists()
+
+    resumed = run_pipeline(
+        config,
+        outdir,
+        execution=ExecutionPolicy(resume=True),
+    )
+    final = json.loads((outdir / "run_manifest.json").read_text(encoding="utf-8"))
+    rows = [json.loads(line) for line in (outdir / "run.log.jsonl").read_text(encoding="utf-8").splitlines()]
+
+    assert final["run_id"] == run_id
+    assert len(final["attempts"]) == 2
+    assert final["attempts"][0]["status"] == "FAILED"
+    assert final["attempts"][1]["status"] == resumed.status
+    assert final["status"] == resumed.status == "PARTIAL"
+    assert [row["event"] for row in rows].count("run_started") == 2
+    assert [row["event"] for row in rows].count("run_failed") == 1
+    assert [row["event"] for row in rows].count("run_completed") == 1
