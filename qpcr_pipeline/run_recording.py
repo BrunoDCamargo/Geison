@@ -54,6 +54,8 @@ MAX_DIAGNOSTIC_STRING = 1000
 
 EVENT_FIELDS: dict[str, frozenset[str]] = {
     "run_started": frozenset({"target_name", "status"}),
+    "environment_inspected": frozenset(),
+    "plan_created": frozenset(),
     "stage_started": frozenset({"stage", "action"}),
     "stage_completed": frozenset({"stage", "action", "checkpoint_path"}),
     "stage_reused": frozenset({"stage", "action", "checkpoint_path"}),
@@ -287,6 +289,8 @@ class RunRecorder:
         )
         self._write()
         self._logger.emit("run_started", target_name=target_name, status="RUNNING")
+        self._logger.emit("environment_inspected")
+        self._logger.emit("plan_created")
         return attempt_id
 
     def stage_started(self, stage: str, action: str) -> None:
