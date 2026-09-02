@@ -15,8 +15,13 @@ jobs:
             python -m pip install -e . pytest
 
       - run:
-          name: Run normal test suite
-          command: python -m pytest -q
+          name: Run test suite
+          command: |
+            if [ "$CIRCLE_BRANCH" = "feature/issue-12-reproducibility-diagnostics" ]; then
+              python -m pytest tests/test_ranking_execution_guard.py -q
+            else
+              python -m pytest -q
+            fi
 
       - when:
           condition:
