@@ -32,15 +32,18 @@ def test_inspector_marks_enabled_tools_required_and_blast_not_used(tmp_path):
     runner = FakeRunner({
         ("cd-hit-est", "-h"): CommandResult(0, "CD-HIT version 4.8.1", ""),
         ("mafft", "--version"): CommandResult(0, "v7.526", ""),
-        ("primer3_core", "--about"): CommandResult(0, "primer3 release 2.6.1", ""),
+        ("primer3_core", "--version"): CommandResult(0, "primer3 release 2.6.1", ""),
         ("blastn", "-version"): CommandResult(127, "", "not found"),
     })
 
     report = EnvironmentInspector(runner=runner).inspect(config)
 
     assert report.tools["cd-hit-est"].required is True
+    assert report.tools["cd-hit-est"].version == "4.8.1"
     assert report.tools["mafft"].required is True
+    assert report.tools["mafft"].version == "v7.526"
     assert report.tools["primer3_core"].required is True
+    assert report.tools["primer3_core"].version == "primer3 release 2.6.1"
     assert report.tools["blast+"].status == "NOT_USED"
     assert report.tools["blast+"].required is False
     assert report.tools["blast+"].installed is False
