@@ -1,49 +1,43 @@
 version: 2.1
 
 jobs:
-  test:
+  issue12_final:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - checkout
-
       - run:
           name: Install Python project and test runner
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
-
       - run:
-          name: Run normal test suite
+          name: Run full unit test suite
           command: python -m pytest -q
-
-      - when:
-          condition:
-            equal: [main, << pipeline.git.branch >>]
-          steps:
-            - run:
-                name: Install integration tools
-                command: |
-                  sudo apt-get update
-                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                    cd-hit \
-                    mafft \
-                    primer3
-
-            - run:
-                name: Verify integration tools
-                command: |
-                  command -v cd-hit-est
-                  command -v mafft
-                  command -v primer3_core
-
-            - run:
-                name: Run integration test suite
-                command: python -m unittest discover -s integration_tests -q
+      - run:
+          name: Install integration tools
+          command: |
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              cd-hit \
+              mafft \
+              primer3
+      - run:
+          name: Verify integration tools
+          command: |
+            command -v cd-hit-est
+            command -v mafft
+            command -v primer3_core
+      - run:
+          name: Run integration test suite
+          command: python -m unittest discover -s integration_tests -q
+      - run:
+          name: Verify clean diff formatting
+          command: git diff --check
 
 workflows:
   ci:
     jobs:
-      - test:
-          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
+      - issue12_final:
+          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
