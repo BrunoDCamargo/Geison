@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Mapping
 
@@ -26,6 +27,68 @@ def _qc_counts(qc_result: object) -> dict[str, int]:
     }
 
 
+def _ncbi_manifest_projection(
+    config: PipelineConfig,
+    outdir: Path,
+    checkpoint_source: Mapping[str, object],
+    counts: dict[str, int],
+) -> dict[str, object]:
+    selected = config.input_ncbi
+    if selected is None:
+        raise ValueError("NCBI provenance requires an NCBI input configuration.")
+
+    manifest_path = Path(outdir) / "ncbi_dataset_manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("NCBI dataset manifest must be a mapping.")
+    source = payload.get("source")
+    resolved_entries = payload.get("resolved_entries")
+    consolidated = payload.get("consolidated")
+    if not isinstance(source, dict) or not isinstance(resolved_entries, list):
+        raise ValueError("NCBI dataset manifest provenance fields are invalid.")
+    if not isinstance(consolidated, dict):
+        raise ValueError("NCBI dataset manifest is missing consolidated identity.")
+
+    resolved_versions: list[str] = []
+    for entry in resolved_entries:
+        if not isinstance(entry, dict):
+            raise ValueError("NCBI resolved provenance entry is invalid.")
+        accession_version = entry.get("accession_version")
+        if not isinstance(accession_version, str) or not accession_version:
+            raise ValueError("NCBI resolved provenance accession version is invalid.")
+        resolved_versions.append(accession_version)
+
+    dataset_sha256 = checkpoint_source.get("records_sha256")
+    if not isinstance(dataset_sha256, str) or not dataset_sha256.startswith("sha256:"):
+        dataset_sha256 = consolidated.get("sha256")
+    if not isinstance(dataset_sha256, str) or not dataset_sha256.startswith("sha256:"):
+        raise ValueError("NCBI dataset provenance is missing a SHA-256 identity.")
+
+    source_mode = source.get("mode")
+    if source_mode not in {"query", "accessions"}:
+        raise ValueError("NCBI dataset provenance mode is invalid.")
+    mode = "frozen_dataset" if selected.frozen_dataset is not None else source_mode
+
+    result: dict[str, object] = {
+        "kind": "ncbi",
+        "mode": mode,
+        "dataset_sha256": dataset_sha256,
+        "resolved_accession_versions": resolved_versions,
+        **counts,
+    }
+    if selected.frozen_dataset is not None:
+        result["source_dataset_mode"] = source_mode
+        result["configured_path"] = str(selected.frozen_dataset)
+        manifest_sha256 = checkpoint_source.get("manifest_sha256")
+        if isinstance(manifest_sha256, str) and manifest_sha256.startswith("sha256:"):
+            result["source_manifest_sha256"] = manifest_sha256
+    elif selected.query is not None:
+        result["query"] = selected.query
+    else:
+        result["requested_accessions"] = list(selected.accessions)
+    return result
+
+
 def build_input_provenance(
     config: PipelineConfig,
     outdir: Path,
@@ -33,7 +96,6 @@ def build_input_provenance(
     input_manifest: object,
 ) -> dict[str, object]:
     """Project safe input provenance from existing checkpoint identities."""
-    del outdir
     counts = _qc_counts(qc_result)
     selected = config.selected_input
     inputs = getattr(input_manifest, "inputs", {})
@@ -55,7 +117,7 @@ def build_input_provenance(
             **counts,
         }
 
-    return {"kind": "ncbi", **counts}
+    return _ncbi_manifest_projection(config, Path(outdir), source, counts)
 
 
 def build_reference_provenance(alignment_result: object) -> dict[str, str | None]:
