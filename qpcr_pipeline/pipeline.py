@@ -36,6 +36,7 @@ from qpcr_pipeline.primer3 import Primer3Runner
 from qpcr_pipeline.primer_design import design_primers
 from qpcr_pipeline.qc import evaluate_sequences
 from qpcr_pipeline.ranking import evaluate_ranking
+from qpcr_pipeline.ranking_guard import evaluate_ranking_with_execution_guard
 from qpcr_pipeline.run_recording import (
     RunRecorder,
     assess_final_completeness,
@@ -556,13 +557,31 @@ def _run_stage(
         )
 
     if stage == "ranking":
-        return evaluate_ranking(
+        inclusivity = results["inclusivity"]
+        specificity = results["specificity"]
+        pre_ranking = assess_pre_ranking_completeness(
+            evaluation_sequence_count=len(qc_result.evaluation_set.sequence_ids),
+            assay_count=len(primer_design.assays),
+            inclusivity_status=inclusivity.status,
+            specificity_status=specificity.status,
+        )
+        if not pre_ranking.missing_evidence:
+            return evaluate_ranking(
+                primer_design,
+                inclusivity,
+                specificity,
+                config.ranking,
+                output_dir,
+                target_name=config.target_name,
+            )
+        return evaluate_ranking_with_execution_guard(
             primer_design,
-            results["inclusivity"],
-            results["specificity"],
+            inclusivity,
+            specificity,
             config.ranking,
             output_dir,
             target_name=config.target_name,
+            execution_missing_evidence=pre_ranking.missing_evidence,
         )
     raise ValueError(f"Unknown pipeline stage: {stage}")
 
