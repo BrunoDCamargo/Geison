@@ -4,7 +4,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
-from qpcr_pipeline.ncbi import NcbiFetchedRecord
+from qpcr_pipeline.ncbi import NcbiFetchedRecord, acquire_ncbi_dataset
 from qpcr_pipeline.pipeline import run_pipeline
 
 
@@ -80,3 +80,31 @@ def test_ncbi_run_records_request_and_resolved_accession_versions(tmp_path):
     assert "completed_batches" not in serialized
     assert "record_ids" not in serialized
     assert "NCBI_API_KEY" not in serialized
+
+
+def test_frozen_ncbi_run_records_dataset_identity_without_internal_batches(tmp_path):
+    frozen = tmp_path / "frozen"
+    acquire_ncbi_dataset(
+        NcbiInputConfig(accessions=("NC_000001.1",)),
+        frozen,
+        client=ProvenanceNcbiClient(),
+    )
+    config = PipelineConfig(
+        target_name="target",
+        input_ncbi=NcbiInputConfig(frozen_dataset=frozen),
+    )
+    outdir = tmp_path / "run"
+
+    run_pipeline(config, outdir)
+
+    manifest = json.loads((outdir / "run_manifest.json").read_text(encoding="utf-8"))
+    provenance = manifest["input_provenance"]
+    assert provenance["kind"] == "ncbi"
+    assert provenance["mode"] == "frozen_dataset"
+    assert provenance["source_dataset_mode"] == "accessions"
+    assert provenance["dataset_sha256"].startswith("sha256:")
+    assert provenance["source_manifest_sha256"].startswith("sha256:")
+    assert provenance["resolved_accession_versions"] == ["NC_000001.1"]
+    serialized = json.dumps(provenance)
+    assert "completed_batches" not in serialized
+    assert "record_ids" not in serialized
