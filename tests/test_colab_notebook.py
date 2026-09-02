@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 
-NOTEBOOK_PATH = Path(__file__).parents[1] / "notebooks" / "geison_colab.ipynb"
+ROOT = Path(__file__).parents[1]
+NOTEBOOK_PATH = ROOT / "notebooks" / "geison_colab.ipynb"
+DOC_PATH = ROOT / "docs" / "colab.md"
 
 
 def _load_notebook():
@@ -56,3 +58,14 @@ def test_colab_notebook_delegates_scientific_work_to_geison_cli():
     assert "import Bio" not in code
     assert "def " not in code
     assert "class " not in code
+
+
+def test_colab_flow_has_operational_documentation():
+    assert DOC_PATH.is_file(), "Colab operational documentation is missing"
+    text = DOC_PATH.read_text(encoding="utf-8")
+
+    assert "notebooks/geison_colab.ipynb" in text
+    assert "git pull --ff-only origin develop" in text
+    assert "qpcr-pipeline doctor" in text
+    assert "--resume" in text
+    assert "report.html" in text
