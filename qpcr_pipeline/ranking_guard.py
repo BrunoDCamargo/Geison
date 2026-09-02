@@ -1,19 +1,29 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from pathlib import Path
 
-from qpcr_pipeline.config import RankingConfig
+from qpcr_pipeline.assay_report_html import render_assay_report_html
+from qpcr_pipeline.config import RankingConfig, validate_ranking_config
 from qpcr_pipeline.inclusivity import InclusivityResult
 from qpcr_pipeline.primer_design import PrimerDesignResult
 from qpcr_pipeline.ranking import (
     ClassifiedAssay,
     RankedAssay,
+    RankingError,
     RankingReason,
+    RankingResult,
+    _artifact_paths,
+    _atomic_write_text,
     _classification_from_reasons,
     _deduplicate_and_sort_reasons,
+    _ranking_report,
     _ranking_sort_key,
+    _ranking_tsv_text,
     _score_components,
     classify_assays,
+    evaluate_ranking,
 )
 from qpcr_pipeline.specificity import SpecificityResult
 
@@ -121,3 +131,77 @@ def rank_assays_with_execution_guard(
 
     ordered = sorted(scored, key=_ranking_sort_key)
     return tuple(replace(item, rank=index) for index, item in enumerate(ordered, 1))
+
+
+def evaluate_ranking_with_execution_guard(
+    primer_design: PrimerDesignResult,
+    inclusivity: InclusivityResult,
+    specificity: SpecificityResult,
+    config: RankingConfig,
+    output_dir: Path,
+    *,
+    target_name: str,
+    execution_missing_evidence: tuple[str, ...] = (),
+) -> RankingResult:
+    """Publish ranking artifacts while enforcing run-level evidence completeness."""
+    validate_ranking_config(config)
+    output_dir = Path(output_dir)
+
+    if not config.enabled:
+        return evaluate_ranking(
+            primer_design,
+            inclusivity,
+            specificity,
+            config,
+            output_dir,
+            target_name=target_name,
+        )
+
+    paths = _artifact_paths(output_dir)
+    paths["report"].parent.mkdir(parents=True, exist_ok=True)
+    for key in ("tsv", "report", "html"):
+        paths[key].unlink(missing_ok=True)
+
+    assays = rank_assays_with_execution_guard(
+        primer_design,
+        inclusivity,
+        specificity,
+        config,
+        execution_missing_evidence=execution_missing_evidence,
+    )
+    if execution_missing_evidence and any(
+        assay.classification == "IN SILICO PASS" for assay in assays
+    ):
+        raise RankingError("Incomplete run evidence cannot produce IN SILICO PASS.")
+
+    tsv_text = _ranking_tsv_text(assays)
+    html_text = render_assay_report_html(
+        target_name=target_name,
+        primer_design=primer_design,
+        inclusivity=inclusivity,
+        specificity=specificity,
+        assays=assays,
+    )
+    report = _ranking_report(
+        status="COMPLETE",
+        config=config,
+        assays=assays,
+        artifacts={
+            "ranking_tsv": "ranking/assay_ranking.tsv",
+            "ranking_report": "ranking/ranking_report.json",
+            "html_report": "report.html",
+        },
+    )
+
+    _atomic_write_text(paths["tsv"], tsv_text)
+    _atomic_write_text(paths["html"], html_text)
+    _atomic_write_text(
+        paths["report"], json.dumps(report, indent=2, sort_keys=True) + "\n"
+    )
+    return RankingResult(
+        status="COMPLETE",
+        assays=assays,
+        ranking_tsv_path=paths["tsv"],
+        ranking_report_path=paths["report"],
+        html_report_path=paths["html"],
+    )
