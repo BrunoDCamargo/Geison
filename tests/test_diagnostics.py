@@ -49,6 +49,28 @@ def test_inspector_marks_enabled_tools_required_and_blast_not_used(tmp_path):
     assert report.tools["blast+"].installed is False
 
 
+def test_inspector_accepts_colab_cdhit_exit_1_and_uses_primer3_about():
+    runner = FakeRunner({
+        ("cd-hit-est", "-h"): CommandResult(
+            1,
+            "====== CD-HIT version 4.8.1 (built on Aug 20 2021) ======",
+            "",
+        ),
+        ("mafft", "--version"): CommandResult(0, "v7.490 (2021/Oct/30)", ""),
+        ("primer3_core", "--about"): CommandResult(0, "libprimer3 release 2.5.0", ""),
+        ("blastn", "-version"): CommandResult(127, "", "not found"),
+    })
+
+    report = EnvironmentInspector(runner=runner).inspect(None)
+
+    assert report.tools["cd-hit-est"].installed is True
+    assert report.tools["cd-hit-est"].version == "4.8.1"
+    assert report.tools["primer3_core"].installed is True
+    assert report.tools["primer3_core"].version == "libprimer3 release 2.5.0"
+    assert ("primer3_core", "--about") in runner.calls
+    assert ("primer3_core", "--version") not in runner.calls
+
+
 def test_inspector_reports_missing_required_tool(tmp_path):
     fasta = tmp_path / "target.fasta"
     fasta.write_text(">s1\nACGT\n", encoding="utf-8")
