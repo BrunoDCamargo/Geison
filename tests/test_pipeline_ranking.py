@@ -17,7 +17,9 @@ from qpcr_pipeline.config import (
 from qpcr_pipeline.models import EvaluationSet, TargetSequenceSet
 from qpcr_pipeline.pipeline import run_pipeline
 from qpcr_pipeline.qc import QCResult
-from qpcr_pipeline.ranking import evaluate_ranking as real_evaluate_ranking
+from qpcr_pipeline.ranking_guard import (
+    evaluate_ranking_with_execution_guard as real_evaluate_ranking,
+)
 from pipeline_checkpoint_fixtures import (
     checkpoint_alignment,
     checkpoint_clustering,
@@ -223,7 +225,7 @@ class PipelineRankingTests(unittest.TestCase):
                     side_effect=specificity_side_effect,
                 ),
                 patch(
-                    "qpcr_pipeline.pipeline.evaluate_ranking",
+                    "qpcr_pipeline.pipeline.evaluate_ranking_with_execution_guard",
                     side_effect=ranking_side_effect,
                 ),
             ):
