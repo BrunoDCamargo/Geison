@@ -73,16 +73,7 @@ jobs:
             echo "cd-hit-est -h RC=${cdhit_rc}"
             echo "primer3_core --about RC=${primer3_rc}"
             cat /tmp/primer3.txt
-            python - <<'PY'
-            from qpcr_pipeline.diagnostics import EnvironmentInspector, render_environment_report
-
-            report = EnvironmentInspector().inspect(None)
-            print(render_environment_report(report))
-            assert report.git.installed
-            for name in ("cd-hit-est", "mafft", "primer3_core"):
-                assert report.tools[name].installed, name
-                assert report.tools[name].version, name
-            PY
+            python -c 'from qpcr_pipeline.diagnostics import EnvironmentInspector, render_environment_report; report = EnvironmentInspector().inspect(None); print(render_environment_report(report)); assert report.git.installed; assert all(report.tools[name].installed and report.tools[name].version for name in ("cd-hit-est", "mafft", "primer3_core"))'
       - run:
           name: Run full test suite
           command: python -m pytest -q
