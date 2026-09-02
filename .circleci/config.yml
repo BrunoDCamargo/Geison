@@ -49,11 +49,49 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Install project and pytest
-          command: python -m pip install -e . pytest
+          name: Install project, tests, and real tools
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -e . pytest
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              cd-hit \
+              mafft \
+              primer3
       - run:
-          name: Run doctor and Colab regression tests
-          command: python -m pytest tests/test_diagnostics.py tests/test_colab_notebook.py -q
+          name: Verify real doctor environment
+          command: |
+            command -v cd-hit-est
+            command -v mafft
+            command -v primer3_core
+            set +e
+            cd-hit-est -h >/tmp/cdhit.txt 2>&1
+            cdhit_rc=$?
+            primer3_core --about >/tmp/primer3.txt 2>&1
+            primer3_rc=$?
+            set -e
+            echo "cd-hit-est -h RC=${cdhit_rc}"
+            echo "primer3_core --about RC=${primer3_rc}"
+            cat /tmp/primer3.txt
+            python - <<'PY'
+            from qpcr_pipeline.diagnostics import EnvironmentInspector, render_environment_report
+
+            report = EnvironmentInspector().inspect(None)
+            print(render_environment_report(report))
+            assert report.git.installed
+            for name in ("cd-hit-est", "mafft", "primer3_core"):
+                assert report.tools[name].installed, name
+                assert report.tools[name].version, name
+            PY
+      - run:
+          name: Run full test suite
+          command: python -m pytest -q
+      - run:
+          name: Run integration test suite
+          command: python -m unittest discover -s integration_tests -q
+      - run:
+          name: Check diff whitespace
+          command: git diff --check develop...HEAD
 
 workflows:
   ci:
