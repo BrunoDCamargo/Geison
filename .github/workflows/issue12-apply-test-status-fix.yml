@@ -1,0 +1,55 @@
+name: Issue 12 test status fix
+
+on:
+  push:
+    branches:
+      - feature/issue-12-reproducibility-diagnostics
+    paths:
+      - .github/workflows/issue12-apply-test-status-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/issue-12-reproducibility-diagnostics
+
+      - name: Apply exact status expectation updates
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("tests/test_minimal_run.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              'self.assertEqual(json.loads(summary_path.read_text())["status"], "COMPLETED")':
+                  'self.assertEqual(json.loads(summary_path.read_text())["status"], "PARTIAL")',
+              'self.assertIn("COMPLETED", result.stdout)':
+                  'self.assertIn("PARTIAL", result.stdout)',
+              'self.assertEqual(summary["status"], "COMPLETED")':
+                  'self.assertEqual(summary["status"], "PARTIAL")',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one occurrence, got {count}: {old}")
+              text = text.replace(old, new)
+          path.write_text(text, encoding="utf-8")
+
+      - name: Verify exact patched blob
+        run: |
+          git diff --check
+          test "$(git hash-object tests/test_minimal_run.py)" = "c27dcd4d5b5cfcaa202305e550de30e59a98225a"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/test_minimal_run.py
+          git commit -m "test: expect partial status for incomplete minimal runs"
+          git push origin HEAD:${GITHUB_REF_NAME}
