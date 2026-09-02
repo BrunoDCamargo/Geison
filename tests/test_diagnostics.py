@@ -1,5 +1,12 @@
 from qpcr_pipeline.config import AlignmentConfig, ClusteringConfig, PipelineConfig, PrimerDesignConfig
-from qpcr_pipeline.diagnostics import CommandResult, EnvironmentInspector
+from qpcr_pipeline.diagnostics import (
+    CommandResult,
+    ComponentReport,
+    EnvironmentInspector,
+    EnvironmentReport,
+    doctor_exit_code,
+    render_environment_report,
+)
 
 
 class FakeRunner:
@@ -57,3 +64,20 @@ def test_doctor_context_treats_external_tools_as_optional():
     report = EnvironmentInspector(runner=FakeRunner({})).inspect(None)
     assert report.missing_required_tools == ()
     assert all(not item.required for item in report.tools.values())
+
+
+def test_doctor_rendering_names_missing_optional_tools_without_failure():
+    missing = ComponentReport("mafft", "UNAVAILABLE", False, False, None)
+    used = ComponentReport("Python", "USED", True, True, "3.12")
+    report = EnvironmentReport(
+        used,
+        used,
+        ComponentReport("Git", "UNAVAILABLE", False, False, None),
+        {"mafft": missing},
+    )
+
+    rendered = render_environment_report(report)
+
+    assert "mafft" in rendered
+    assert "UNAVAILABLE" in rendered
+    assert doctor_exit_code(report) == 0
