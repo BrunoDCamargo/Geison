@@ -52,27 +52,56 @@ def plan_pipeline(
 
     if policy.from_step is not None:
         required = set(required_reuse_boundary(policy.from_step))
-        blocked: set[str] = set()
+        blocking: list[str] = []
         for stage in STAGE_ORDER:
             if stage not in required:
                 continue
-            if stage in blocked:
+
+            missing_dependencies = [
+                dependency
+                for dependency in STAGE_DEFINITIONS[stage].dependencies
+                if dependency in required and dependency not in manifests
+            ]
+            if missing_dependencies:
                 reusable[stage] = False
+                blocking.append(
+                    f"{stage}: DEPENDENCY_UNAVAILABLE "
+                    f"({', '.join(missing_dependencies)})"
+                )
                 continue
+
             try:
                 request = stage_request(stage, config, manifests, results, provider)
-            except Exception:
+            except Exception as error:
                 reusable[stage] = False
-                blocked.update(transitive_descendants(stage))
+                blocking.append(
+                    f"{stage}: REQUEST_INVALID "
+                    f"({type(error).__name__}: {error})"
+                )
                 continue
+
             validation = manager.validate(request, STAGE_DEFINITIONS[stage].codec)
             reusable[stage] = validation.valid
             if not validation.valid:
-                blocked.update(transitive_descendants(stage))
+                category = (
+                    validation.invalidity.value
+                    if validation.invalidity is not None
+                    else "INVALID_CHECKPOINT"
+                )
+                detail = validation.detail or "checkpoint validation failed"
+                blocking.append(f"{stage}: {category} ({detail})")
                 continue
+
             assert validation.loaded is not None
             results[stage] = validation.loaded.state
             manifests[stage] = validation.loaded.manifest
+
+        if blocking:
+            details = "; ".join(blocking)
+            raise ValueError(
+                "--from-step cannot start because required checkpoint(s) are invalid: "
+                f"{details}. Use --resume to repair invalid stages or restart from an earlier stage."
+            )
 
         return PipelineExecutionPlan(
             decisions=plan_from_validity(policy, reusable),
