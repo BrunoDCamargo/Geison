@@ -42,44 +42,20 @@ jobs:
                 name: Run integration test suite
                 command: python -m unittest discover -s integration_tests -q
 
-  issue12_ranking:
+  issue12_dry_run:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run pipeline ranking tests
-          command: python -m pytest tests/test_pipeline_ranking.py -q
-
-  issue12_resume:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run pipeline resume tests
-          command: python -m pytest tests/test_pipeline_resume.py -q
-
-  issue12_specificity:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run pipeline specificity tests
-          command: python -m pytest tests/test_pipeline_specificity.py -q
+          name: Run dry-run binary probe guard
+          command: python -m pytest tests/test_dry_run.py::test_resume_dry_run_reuses_environment_tool_identity_without_probing_binaries -q
 
 workflows:
   ci:
     jobs:
       - test:
           filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
-      - issue12_ranking:
-          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
-      - issue12_resume:
-          filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
-      - issue12_specificity:
+      - issue12_dry_run:
           filters: pipeline.git.branch == "feature/issue-12-reproducibility-diagnostics"
