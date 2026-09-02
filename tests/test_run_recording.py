@@ -26,6 +26,38 @@ def test_begin_attempt_logs_environment_and_plan_creation(tmp_path):
     assert events == ["run_started", "environment_inspected", "plan_created"]
 
 
+def test_attempt_history_preserves_execution_policy_and_plan(tmp_path):
+    ids = iter(("run-1", "attempt-1", "attempt-2"))
+    recorder = RunRecorder(
+        tmp_path,
+        clock=lambda: "2026-08-31T00:00:00Z",
+        id_factory=lambda: next(ids),
+    )
+
+    recorder.begin_attempt(
+        "target",
+        {},
+        {"resume": False, "from_step": None},
+        {},
+        [{"stage": "input", "action": "RUN"}],
+    )
+    recorder.fail(RuntimeError("first failure"), stage="input")
+    recorder.begin_attempt(
+        "target",
+        {},
+        {"resume": True, "from_step": None},
+        {},
+        [{"stage": "input", "action": "REUSE"}],
+    )
+
+    payload = json.loads((tmp_path / "run_manifest.json").read_text(encoding="utf-8"))
+    first, second = payload["attempts"]
+    assert first["execution_policy"] == {"resume": False, "from_step": None}
+    assert first["plan"] == [{"stage": "input", "action": "RUN"}]
+    assert second["execution_policy"] == {"resume": True, "from_step": None}
+    assert second["plan"] == [{"stage": "input", "action": "REUSE"}]
+
+
 def test_resume_retains_run_identity_and_appends_attempt(tmp_path):
     ids = iter(("run-1", "attempt-1", "attempt-2"))
     recorder = RunRecorder(
