@@ -1,6 +1,10 @@
 import json
 
-from qpcr_pipeline.config import PipelineConfig
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+
+from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
+from qpcr_pipeline.ncbi import NcbiFetchedRecord
 from qpcr_pipeline.pipeline import run_pipeline
 
 
@@ -8,6 +12,20 @@ def _minimal_config(tmp_path):
     fasta = tmp_path / "target.fasta"
     fasta.write_text(">s1\nACGTACGTACGT\n>s2\nACGTACGAACGT\n", encoding="utf-8")
     return PipelineConfig(target_name="target", input_fasta=fasta)
+
+
+class ProvenanceNcbiClient:
+    def resolve_query(self, query, max_records):
+        raise AssertionError("accession mode must not resolve a query")
+
+    def fetch_records(self, identifiers, *, identifier_kind):
+        assert identifier_kind == "accession"
+        rows = []
+        for identifier in identifiers:
+            record = SeqRecord(Seq("ACGTACGTACGT"), id=identifier, name=identifier)
+            record.annotations["molecule_type"] = "DNA"
+            rows.append(NcbiFetchedRecord(request_id=identifier, record=record))
+        return tuple(rows)
 
 
 def test_successful_incomplete_fixture_is_partial_and_has_manifest(tmp_path):
@@ -40,3 +58,25 @@ def test_local_run_records_effective_config_hash_counts_and_reference(tmp_path):
     assert set(manifest["reference"]) == {"id", "mode"}
     serialized = json.dumps(manifest)
     assert "ACGTACGTACGT" not in serialized
+
+
+def test_ncbi_run_records_request_and_resolved_accession_versions(tmp_path):
+    config = PipelineConfig(
+        target_name="target",
+        input_ncbi=NcbiInputConfig(accessions=("NC_000001.1",)),
+    )
+    outdir = tmp_path / "run"
+
+    run_pipeline(config, outdir, ncbi_client=ProvenanceNcbiClient())
+
+    manifest = json.loads((outdir / "run_manifest.json").read_text(encoding="utf-8"))
+    provenance = manifest["input_provenance"]
+    assert provenance["kind"] == "ncbi"
+    assert provenance["mode"] == "accessions"
+    assert provenance["requested_accessions"] == ["NC_000001.1"]
+    assert provenance["resolved_accession_versions"] == ["NC_000001.1"]
+    assert provenance["dataset_sha256"].startswith("sha256:")
+    serialized = json.dumps(provenance)
+    assert "completed_batches" not in serialized
+    assert "record_ids" not in serialized
+    assert "NCBI_API_KEY" not in serialized
