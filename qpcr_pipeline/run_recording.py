@@ -270,6 +270,8 @@ class RunRecorder:
         attempts.append(
             {
                 "attempt_id": attempt_id,
+                "execution_policy": sanitize_diagnostic(execution_policy),
+                "plan": sanitize_diagnostic(plan),
                 "status": "RUNNING",
                 "started_at": now,
                 "finished_at": None,
