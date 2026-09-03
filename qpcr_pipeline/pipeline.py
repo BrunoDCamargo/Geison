@@ -35,6 +35,7 @@ from qpcr_pipeline.panel_manifest import (
 from qpcr_pipeline.planning import plan_pipeline
 from qpcr_pipeline.provenance import (
     build_input_provenance,
+    build_panel_provenance,
     build_reference_provenance,
     effective_config_payload,
 )
@@ -368,10 +369,11 @@ def run_pipeline(
         recorder.complete(
             final_status,
             final_completeness,
-            build_input_provenance(
+            input_provenance=build_input_provenance(
                 config, output_dir, qc_result, manifests["input"]
             ),
-            build_reference_provenance(alignment),
+            reference=build_reference_provenance(alignment),
+            panel_provenance=build_panel_provenance(results["panel"]),
         )
         return summary
     except BaseException as error:

@@ -1,14 +1,17 @@
 import json
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 import qpcr_pipeline.pipeline as pipeline_module
-from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
+from qpcr_pipeline.config import NcbiInputConfig, PanelConfig, PipelineConfig
 from qpcr_pipeline.execution import ExecutionPolicy
 from qpcr_pipeline.ncbi import NcbiFetchedRecord, ResolvedNcbiQuery, acquire_ncbi_dataset
 from qpcr_pipeline.pipeline import run_pipeline
+from qpcr_pipeline.panel_manifest import approve_panel_proposal
 
 
 def _minimal_config(tmp_path):
@@ -81,7 +84,35 @@ def test_local_run_records_effective_config_hash_counts_and_reference(tmp_path):
     assert provenance["rejected_count"] == 0
     assert "records" not in provenance
     assert set(manifest["reference"]) == {"id", "mode"}
+    assert manifest["panel_provenance"] == {"mode": "legacy_unconfigured"}
     serialized = json.dumps(manifest)
+    assert "ACGTACGTACGT" not in serialized
+
+
+def test_approved_panel_run_records_compact_panel_provenance(tmp_path):
+    approved = tmp_path / "approved_panel.json"
+    approve_panel_proposal(
+        Path("tests/fixtures/panels/west_nile_proposal.yaml"),
+        approved,
+    )
+    config = replace(
+        _minimal_config(tmp_path),
+        target_name="West Nile virus",
+        panel=PanelConfig(frozen_manifest=approved),
+    )
+    outdir = tmp_path / "run"
+
+    run_pipeline(config, outdir)
+
+    manifest = json.loads((outdir / "run_manifest.json").read_text(encoding="utf-8"))
+    provenance = manifest["panel_provenance"]
+    assert provenance["mode"] == "approved_manifest"
+    assert provenance["manifest_sha256"].startswith("sha256:")
+    assert provenance["target_mode"] == "broad_detection"
+    assert provenance["non_target_count"] == 3
+    serialized = json.dumps(provenance)
+    assert "definition" not in serialized
+    assert "Usutu virus" not in serialized
     assert "ACGTACGTACGT" not in serialized
 
 

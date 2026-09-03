@@ -350,8 +350,10 @@ class RunRecorder:
         self,
         status: str,
         scientific_completeness: ScientificCompleteness | dict[str, object],
+        *,
         input_provenance: object,
         reference: object,
+        panel_provenance: object,
     ) -> None:
         if status not in {"COMPLETED", "PARTIAL"}:
             raise ValueError("Successful run status must be COMPLETED or PARTIAL.")
@@ -369,6 +371,8 @@ class RunRecorder:
         )
         self._payload["input_provenance"] = sanitize_diagnostic(input_provenance)
         self._payload["reference"] = sanitize_diagnostic(reference)
+        self._payload["panel_provenance"] = sanitize_diagnostic(panel_provenance)
+        self._payload["action_required"] = None
         self._payload["failure"] = None
         self._write()
         assert self._logger is not None

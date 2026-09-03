@@ -5,6 +5,7 @@ from qpcr_pipeline.config import load_config
 from qpcr_pipeline.diagnostics import EnvironmentInspector, doctor_exit_code, render_environment_report
 from qpcr_pipeline.dry_run import dry_run_pipeline
 from qpcr_pipeline.execution import ExecutionPolicy, STAGE_ORDER
+from qpcr_pipeline.panel_manifest import approve_panel_proposal
 from qpcr_pipeline.pipeline import run_pipeline
 
 
@@ -13,6 +14,21 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("doctor", help="Inspect the Geison execution environment")
+
+    panel_parser = subparsers.add_parser(
+        "panel",
+        help="Review and freeze assay panels",
+    )
+    panel_subparsers = panel_parser.add_subparsers(
+        dest="panel_command",
+        required=True,
+    )
+    approve_parser = panel_subparsers.add_parser(
+        "approve",
+        help="Approve a reviewed panel proposal and write a frozen manifest",
+    )
+    approve_parser.add_argument("proposal", type=Path)
+    approve_parser.add_argument("--output", type=Path, required=True)
 
     run_parser = subparsers.add_parser(
         "run", help="Run or validate the qPCR pipeline configuration"
@@ -66,6 +82,12 @@ def main() -> int:
         print(render_environment_report(report))
         return doctor_exit_code(report)
 
+    if args.command == "panel" and args.panel_command == "approve":
+        manifest = approve_panel_proposal(args.proposal, args.output)
+        print(f"Approved panel manifest: {args.output}")
+        print(f"Proposal identity: {manifest.proposal_sha256}")
+        return 0
+
     if args.command == "run":
         config = load_config(args.config)
         resume_control_requested = (
@@ -94,6 +116,12 @@ def main() -> int:
             return 0
 
         summary = run_pipeline(config, args.outdir, execution=execution)
+        if summary.status == "ACTION_REQUIRED":
+            print(
+                f"ACTION_REQUIRED: {summary.action_required_code} "
+                f"({summary.action_required_artifact})"
+            )
+            return 3
         print(
             f"{summary.status}: {summary.target_name} "
             f"({summary.sequence_count} sequences)"

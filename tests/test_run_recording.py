@@ -72,8 +72,9 @@ def test_resume_retains_run_identity_and_appends_attempt(tmp_path):
     recorder.complete(
         "PARTIAL",
         {"complete": False, "missing_evidence": ["NO_ASSAYS"]},
-        {},
-        {"id": None, "mode": None},
+        input_provenance={},
+        reference={"id": None, "mode": None},
+        panel_provenance={"mode": "legacy_unconfigured"},
     )
 
     payload = json.loads((tmp_path / "run_manifest.json").read_text(encoding="utf-8"))
@@ -86,6 +87,8 @@ def test_resume_retains_run_identity_and_appends_attempt(tmp_path):
         "FAILED",
         "PARTIAL",
     ]
+    assert payload["panel_provenance"] == {"mode": "legacy_unconfigured"}
+    assert payload["action_required"] is None
 
 
 def test_failure_before_first_stage_records_null_stage(tmp_path):

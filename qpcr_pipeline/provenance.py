@@ -156,3 +156,36 @@ def build_reference_provenance(alignment_result: object) -> dict[str, str | None
         "id": getattr(alignment_result, "reference_id", None),
         "mode": getattr(alignment_result, "reference_mode", None),
     }
+
+
+def build_panel_provenance(panel_result: object) -> dict[str, object]:
+    status = getattr(panel_result, "status", None)
+    if status == "LEGACY":
+        return {"mode": "legacy_unconfigured"}
+    if status != "APPROVED":
+        raise ValueError(
+            "Panel provenance requires an approved or legacy panel result."
+        )
+    manifest_sha256 = _sha256_identity(
+        getattr(panel_result, "manifest_sha256", None)
+    )
+    if manifest_sha256 is None:
+        raise ValueError(
+            "Approved panel provenance is missing a SHA-256 identity."
+        )
+    target_mode = getattr(panel_result, "target_mode", None)
+    if target_mode not in {"broad_detection", "subtype_specific"}:
+        raise ValueError("Approved panel provenance target_mode is invalid.")
+    non_target_count = getattr(panel_result, "non_target_count", None)
+    if (
+        isinstance(non_target_count, bool)
+        or not isinstance(non_target_count, int)
+        or non_target_count < 0
+    ):
+        raise ValueError("Approved panel provenance non_target_count is invalid.")
+    return {
+        "mode": "approved_manifest",
+        "manifest_sha256": manifest_sha256,
+        "target_mode": target_mode,
+        "non_target_count": non_target_count,
+    }
