@@ -112,11 +112,12 @@ For v1, challenge datasets are mapped by exact normalized name between:
 
 Rules:
 
-1. Every enabled CHALLENGE non-target selected for contrast must resolve to exactly one off-target dataset.
+1. Every approved CHALLENGE non-target used by contrastive analysis must resolve to exactly one off-target dataset.
 2. Duplicate normalized names are invalid.
-3. A configured off-target not represented in the approved panel may still be used by final specificity only if explicitly allowed by existing configuration rules, but it is not silently promoted into the contrastive panel.
+3. A configured off-target absent from the approved CHALLENGE panel is not silently promoted into contrastive analysis.
 4. Dataset provenance and hashes are recorded in contrastive artifacts.
 5. Criticality comes from the approved panel, never from the off-target file name or notebook UI.
+6. The same resolved dataset object is reusable later by final specificity.
 
 This avoids two independent registries for the same scientific evidence.
 
@@ -144,53 +145,91 @@ For each target window Geison records at least:
 - worst non-target dataset;
 - worst non-target criticality;
 - worst observed similarity;
-- an ordering metric derived from target stability plus challenge differentiation.
+- worst `CRITICAL` similarity when such datasets exist;
+- worst `IMPORTANT` similarity when such datasets exist.
 
-The exact low-level similarity engine is an implementation detail of this subproject and must be testable behind a focused interface. The stage output must not discard per-dataset values after producing an aggregate ordering metric.
+The exact low-level similarity engine is an implementation detail behind a focused, testable interface. The public result contract is the evidence above, not a particular matching implementation.
 
-### 7.2 Criticality semantics
+The stage output must not discard per-dataset values after producing aggregate summaries.
+
+### 7.2 Criticality semantics and deterministic ordering
 
 Criticality affects interpretation and ordering, not raw measurements.
 
-A region with concerning evidence in a `CRITICAL` dataset must not look equivalent in the UI to a region whose only concerning evidence occurs in `BACKGROUND`.
+The first implementation uses a transparent lexicographic ordering rather than an opaque weighted score:
 
-The report must therefore expose at least:
+1. lower worst similarity among `CRITICAL` datasets;
+2. lower worst similarity among `IMPORTANT` datasets;
+3. lower worst similarity across all CHALLENGE datasets;
+4. higher target mean conservation;
+5. higher target minimum conservation;
+6. higher target coverage;
+7. lower target entropy;
+8. lower reference start/end as deterministic tie-breakers.
 
-- worst evidence across all challenge datasets;
-- worst evidence among `CRITICAL` datasets;
-- worst evidence among `IMPORTANT` datasets;
-- supporting per-dataset rows.
+If a criticality class is absent from the approved panel, that ordering level is skipped rather than assigned an artificial numeric value.
 
-The first implementation must not hide these categories inside a single opaque score.
+A display-only `contrast_delta = target_mean_conservation - worst_similarity` may be published for intuitive plots, but it is not the sole ordering rule and is never treated as a biological PASS criterion.
 
 ### 7.3 No hidden biological defaults
 
-The core must not silently embed organism-specific cutoffs.
+The v1 core does **not** implement a universal non-target similarity cutoff and does not label regions biologically `PASS`/`FAIL` based on a hidden threshold.
 
-The stage may produce continuous evidence and deterministic ranking without claiming a universal biological PASS threshold. If policy thresholds are supported, they must be explicit configuration values and recorded in the run manifest/report.
+Instead:
 
-The guided synthetic demo may use illustrative values solely to make the architecture visible; those values must be labeled as synthetic-demo parameters and must not become production defaults.
+- existing target-side conservation eligibility controls remain explicit configuration;
+- contrastive evidence deterministically reorders eligible target windows;
+- challenge evidence is shown continuously and per criticality class;
+- final interpretation remains visible in artifacts and notebook explanations.
 
-## 8. Window consolidation into candidate regions
+The guided synthetic demo may use illustrative visual guide lines solely to make the architecture obvious. Those guide lines are labeled `synthetic demo only` and do not enter production selection logic.
 
-Raw sliding windows are an analysis primitive, not the primary user object.
+## 8. Candidate-region selection and consolidation
 
-The stage consolidates overlapping high-ranking windows into candidate regions before handing them to assay design.
+The current `PrimerDesignConfig` already owns target-side candidate-selection controls such as:
 
-Example conceptually:
+- `max_candidate_regions`;
+- `candidate_region_length`;
+- `max_region_overlap_fraction`;
+- target conservation/coverage/gap/entropy eligibility fields.
 
-`721-800, 731-810, 741-820, 751-830 -> one candidate region`
+For v1, these settings remain in `PrimerDesignConfig` to avoid a breaking configuration migration.
 
-The consolidation contract must be deterministic and auditable:
+When contrastive analysis is enabled, Geison derives a small internal `RegionSelectionPolicy` from only those candidate-selection fields. Primer3 oligo constraints are not part of that policy.
 
-- every candidate region lists its contributing windows;
-- reference coordinates remain 1-based inclusive in public artifacts;
-- candidate regions have stable deterministic IDs such as `contrast-region-001`;
-- ordering is deterministic;
-- overlap consolidation parameters are recorded in configuration/report;
-- raw windows remain available in a separate artifact.
+The contrastive stage uses that policy as follows:
 
-No candidate-region consolidation may delete the underlying evidence needed to explain why a region was ranked.
+1. start from target conservation windows;
+2. apply the same target-side eligibility semantics currently used before Primer3;
+3. attach per-dataset challenge evidence;
+4. sort eligible windows by the transparent contrastive ordering in section 7.2;
+5. expand each accepted peak window to `candidate_region_length` using the existing reference-coordinate expansion behavior;
+6. deduplicate identical expanded intervals;
+7. accept regions in order while enforcing `max_region_overlap_fraction` against already accepted regions;
+8. stop at `max_candidate_regions`.
+
+This produces deterministic consolidated regions without introducing a new biological contrast cutoff.
+
+Public candidate regions have stable deterministic IDs such as `contrast-region-001` and retain:
+
+- peak window coordinates;
+- expanded region coordinates;
+- contributing/raw window references needed for explanation;
+- target metrics;
+- worst challenge dataset/criticality;
+- per-criticality summaries;
+- deterministic rank.
+
+When contrastive analysis is disabled, the existing conservation-only selector remains unchanged.
+
+### 8.1 Checkpoint parameter boundary
+
+Because contrastive region selection uses only the candidate-selection subset of `PrimerDesignConfig`, the contrastive checkpoint fingerprint includes that subset but **not** Primer3 oligo thermodynamic/design constraints.
+
+Therefore:
+
+- changing `max_candidate_regions`, candidate length, overlap fraction or target eligibility fields invalidates contrastive selection;
+- changing primer/probe Tm, size, GC or other Primer3-only constraints does not invalidate contrastive conservation.
 
 ## 9. Core result type
 
@@ -237,6 +276,7 @@ Its request fingerprint includes:
 - the completed conservation dependency fingerprint;
 - Geison version;
 - contrastive configuration;
+- the candidate-selection subset described in section 8;
 - approved panel manifest SHA-256;
 - resolved CHALLENGE dataset names;
 - challenge dataset record hashes/manifests;
@@ -244,11 +284,12 @@ Its request fingerprint includes:
 
 Expected invalidation behavior:
 
-- changing only a Primer3 parameter does not invalidate contrastive conservation;
+- changing only Primer3 oligo-design parameters does not invalidate contrastive conservation;
+- changing region-selection parameters does invalidate contrastive conservation;
 - changing target input/alignment/conservation invalidates contrastive and all descendants;
 - changing a challenge dataset invalidates contrastive, primer design, inclusivity where dependent, specificity and ranking, but does not rerun target acquisition/alignment/conservation;
 - changing non-target criticality or CHALLENGE membership invalidates contrastive and descendants, but not target conservation;
-- changing only final specificity tolerances must not invalidate contrastive conservation;
+- changing only final specificity tolerances does not invalidate contrastive conservation;
 - corruption or removal of declared contrastive artifacts makes the checkpoint non-reusable.
 
 ## 12. Primer-design integration
@@ -267,16 +308,16 @@ Behavior remains unchanged.
 
 `contrastive_conservation.enabled = true`
 
-`ConservationResult + ContrastiveConservationResult -> contrast-ranked candidate regions -> Primer3`
+`ConservationResult + ContrastiveConservationResult -> approved contrast-ranked regions -> Primer3`
 
-`primer_design` still receives target consensus/reference information from conservation because Primer3 needs the target sequence context. Candidate-region choice, however, is constrained/ordered by the contrastive result rather than recomputed independently from all conservation windows.
+`primer_design` still receives target consensus/reference information from conservation because Primer3 needs target sequence context. Candidate-region choice, however, comes from `ContrastiveConservationResult` and is not recomputed independently from all conservation windows.
 
-The primer-design report must record whether each candidate came from:
+The primer-design report records whether each candidate came from:
 
 - `CONSERVATION_ONLY`; or
 - `CONTRASTIVE_CONSERVATION`.
 
-Each assay keeps a `region_id` that traces back to the contrastive candidate region and its contributing windows.
+Each assay keeps a `region_id` that traces back to the contrastive candidate region and its peak/raw window evidence.
 
 ## 13. Relationship with final specificity
 
@@ -396,7 +437,7 @@ Render:
 - target-group representation;
 - reference ID;
 - number of conservation windows;
-- interactive or static genome conservation view;
+- genome conservation view;
 - plain-language summary: `Where is the target stable?`
 
 The user can expand raw conservation artifacts.
@@ -409,15 +450,18 @@ Render two complementary visuals:
 
 1. **Quadrant plot**
    - Y: target conservation;
-   - X: challenge similarity/evidence;
+   - X: worst challenge similarity/evidence;
    - highlight contrast-ranked regions;
-   - plain-language quadrant labels.
+   - plain-language quadrant labels;
+   - optional synthetic-demo guide lines clearly labeled as non-production visual aids.
 
 2. **Reference track**
    - target conservation across reference;
    - worst challenge similarity across reference;
    - candidate-region overlays;
-   - click/selection support if feasible without custom frontend.
+   - hover details for region/window evidence.
+
+No custom click-to-edit selection behavior is required in v1. Region review is read-only in the guided notebook; changes to selection policy are made through the form/config and rerun, preserving reproducibility.
 
 Below the plots, show candidate-region cards/table with:
 
@@ -527,7 +571,7 @@ A region detail view must answer:
 2. Which challenge dataset was most similar?
 3. What was that dataset's criticality?
 4. Which other challenge datasets were evaluated?
-5. Which raw windows contributed to this region?
+5. Which raw/peak window produced this region?
 6. Which assay candidates were designed from it?
 7. Which final specificity results relate to those assays?
 
@@ -543,8 +587,9 @@ Cover:
 - panel-to-off-target mapping;
 - per-dataset metric preservation;
 - criticality summaries;
-- deterministic ordering;
-- window consolidation;
+- lexicographic ordering;
+- target eligibility reuse;
+- deterministic region expansion/deduplication/overlap suppression;
 - empty target/challenge inputs;
 - duplicate dataset names;
 - missing CHALLENGE dataset mapping;
@@ -560,6 +605,8 @@ Cover:
 - resume/reuse;
 - invalidation on challenge dataset changes;
 - invalidation on panel criticality/role changes;
+- invalidation on region-selection parameter changes;
+- no invalidation on Primer3-only oligo parameter changes;
 - no invalidation of target conservation when only challenge evidence changes;
 - downstream invalidation of primer design/specificity/ranking;
 - legacy config behavior unchanged.
@@ -570,7 +617,7 @@ Keep a deterministic synthetic fixture with:
 
 - a target-shared conserved region that should rank poorly for contrast;
 - a target-stable/challenge-divergent region that should rank highly;
-- overlapping windows that consolidate into one region;
+- overlapping candidate windows that collapse into one selected region;
 - at least two challenge criticality classes.
 
 Tests assert relational behavior, not organism-specific biological thresholds.
@@ -615,8 +662,8 @@ The subproject is accepted when all of the following are true:
 3. Enabled contrastive runs require and record approved panel provenance.
 4. CHALLENGE non-targets map deterministically to the same datasets available to specificity.
 5. Per-dataset evidence and criticality are preserved in artifacts.
-6. Overlapping windows are consolidated into deterministic candidate regions.
-7. Primer design can consume contrastive candidate regions while retaining target consensus context.
+6. Contrastive candidate regions are selected deterministically using existing explicit target eligibility controls plus transparent challenge ordering, without a hidden biological contrast cutoff.
+7. Primer design consumes contrastive candidate regions while retaining target consensus context.
 8. Final specificity remains independently evaluated after oligo design.
 9. Resume/checkpoint invalidation follows the rules in section 11.
 10. A deterministic synthetic fixture distinguishes a shared-conserved region from a target-stable/challenge-divergent region.
@@ -626,6 +673,7 @@ The subproject is accepted when all of the following are true:
 14. `PARTIAL`, `FAILED` and `ACTION_REQUIRED` states are never presented as completed success.
 15. Full regression and focused tests pass in CircleCI.
 16. The bundled West Nile-like demonstration remains synthetic and does not embed organism-specific assay sequences or hidden biological cutoffs.
+17. The primary notebook contrast view uses deterministic hover/read-only exploration; selection changes require explicit config/form changes and rerun.
 
 ## 21. Resulting conceptual model
 
