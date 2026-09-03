@@ -27,6 +27,7 @@ from qpcr_pipeline.execution import STAGE_ORDER, ExecutionPolicy
 from qpcr_pipeline.inclusivity import evaluate_inclusivity
 from qpcr_pipeline.local_input import LocalSequenceRecord, load_genbank, load_local_sequences
 from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen_dataset
+from qpcr_pipeline.panel_manifest import prepare_panel_preflight
 from qpcr_pipeline.planning import plan_pipeline
 from qpcr_pipeline.provenance import (
     build_input_provenance,
@@ -58,6 +59,8 @@ class RunSummary:
     sequence_count: int
     sequence_ids: list[str]
     stage_actions: tuple[StageActionSummary, ...] = ()
+    action_required_code: str | None = None
+    action_required_artifact: str | None = None
 
 
 class _EffectiveToolIdentityProvider:
@@ -118,16 +121,51 @@ def run_pipeline(
         primer3_runner=primer3_runner,
     )
     environment = (environment_inspector or EnvironmentInspector()).inspect(config)
-    plan = plan_pipeline(
-        config,
+    panel_preflight = prepare_panel_preflight(
+        config.panel,
         output_dir,
-        execution=policy,
-        tool_identity_provider=effective_tool_provider,
+        target_name=config.target_name,
     )
     recorder = (
         recorder_factory(output_dir)
         if recorder_factory is not None
         else RunRecorder(output_dir)
+    )
+    if panel_preflight.status == "ACTION_REQUIRED":
+        proposal_path = panel_preflight.proposal_path
+        assert proposal_path is not None
+        synthetic_plan = [
+            {
+                "stage": "panel",
+                "action": "ACTION_REQUIRED",
+                "reason": "panel approval required before scientific execution",
+            }
+        ]
+        recorder.begin_attempt(
+            config.target_name,
+            effective_config_payload(config),
+            asdict(policy),
+            environment,
+            synthetic_plan,
+        )
+        (output_dir / "run_summary.json").unlink(missing_ok=True)
+        (output_dir / "qc_report.json").unlink(missing_ok=True)
+        recorder.action_required("PANEL_APPROVAL_REQUIRED", proposal_path)
+        summary = RunSummary(
+            status="ACTION_REQUIRED",
+            target_name=config.target_name,
+            sequence_count=0,
+            sequence_ids=[],
+            action_required_code="PANEL_APPROVAL_REQUIRED",
+            action_required_artifact=str(proposal_path),
+        )
+        _write_json_atomic(output_dir / "run_summary.json", asdict(summary))
+        return summary
+    plan = plan_pipeline(
+        config,
+        output_dir,
+        execution=policy,
+        tool_identity_provider=effective_tool_provider,
     )
     recorder.begin_attempt(
         config.target_name,

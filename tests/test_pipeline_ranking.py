@@ -17,7 +17,7 @@ from qpcr_pipeline.config import (
 from qpcr_pipeline.models import EvaluationSet, TargetSequenceSet
 from qpcr_pipeline.pipeline import run_pipeline
 from qpcr_pipeline.qc import QCResult
-from panel_fixtures import proposal_panel_config
+from panel_fixtures import approved_panel_config
 from qpcr_pipeline.ranking_guard import (
     evaluate_ranking_with_execution_guard as real_evaluate_ranking,
 )
@@ -44,7 +44,7 @@ class PipelineRankingTests(unittest.TestCase):
         return PipelineConfig(
             target_name="target",
             input_fasta=FIXTURE_FASTA,
-            panel=proposal_panel_config("target"),
+            panel=approved_panel_config(off_target_path.parent, "target"),
             alignment=AlignmentConfig(enabled=True),
             conservation=ConservationConfig(enabled=True),
             primer_design=PrimerDesignConfig(enabled=True),

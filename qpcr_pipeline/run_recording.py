@@ -61,6 +61,7 @@ EVENT_FIELDS: dict[str, frozenset[str]] = {
     "stage_reused": frozenset({"stage", "action", "checkpoint_path"}),
     "stage_failed": frozenset({"stage", "message", "error_type"}),
     "run_completed": frozenset({"status", "missing_evidence"}),
+    "run_action_required": frozenset({"status", "code", "artifact"}),
     "run_failed": frozenset({"status", "stage", "message", "error_type"}),
 }
 
@@ -242,9 +243,14 @@ class RunRecorder:
                 "scientific_completeness": None,
                 "input_provenance": {},
                 "reference": {"id": None, "mode": None},
+                "action_required": None,
+                "panel_provenance": {},
                 "failure": None,
             }
         else:
+            payload.setdefault("action_required", None)
+            payload.setdefault("panel_provenance", {})
+            payload["action_required"] = None
             attempts = payload["attempts"]
             assert isinstance(attempts, list)
             for attempt in attempts:
@@ -372,6 +378,33 @@ class RunRecorder:
             "run_completed",
             status=status,
             missing_evidence=completeness.get("missing_evidence", []),
+        )
+
+    def action_required(self, code: str, artifact: Path) -> None:
+        if not isinstance(code, str) or not code:
+            raise ValueError("Action-required code must be non-empty.")
+        if self._payload is None:
+            raise RuntimeError("No active run manifest.")
+        now = self.clock()
+        action = {
+            "code": code,
+            "artifact": sanitize_diagnostic(artifact),
+        }
+        attempt = self._active_attempt()
+        attempt["status"] = "ACTION_REQUIRED"
+        attempt["finished_at"] = now
+        attempt["failure"] = None
+        self._payload["status"] = "ACTION_REQUIRED"
+        self._payload["updated_at"] = now
+        self._payload["action_required"] = action
+        self._payload["failure"] = None
+        self._write()
+        assert self._logger is not None
+        self._logger.emit(
+            "run_action_required",
+            status="ACTION_REQUIRED",
+            code=code,
+            artifact=artifact,
         )
 
     def fail(self, error: BaseException, *, stage: str | None) -> None:

@@ -112,3 +112,22 @@ def test_new_attempt_marks_stale_running_attempt_interrupted(tmp_path):
     first = payload["attempts"][0]
     assert first["status"] == "FAILED"
     assert first["failure"]["code"] == "INTERRUPTED"
+
+
+def test_resume_normalizes_pre_panel_schema_one_manifest(tmp_path):
+    ids = iter(("run-1", "attempt-1", "attempt-2"))
+    recorder = RunRecorder(tmp_path, id_factory=lambda: next(ids))
+    recorder.begin_attempt("target", {}, {"resume": False}, {}, [])
+    recorder.fail(RuntimeError("first failure"), stage="input")
+
+    manifest_path = tmp_path / "run_manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload.pop("action_required", None)
+    payload.pop("panel_provenance", None)
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    recorder.begin_attempt("target", {}, {"resume": True}, {}, [])
+
+    normalized = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert normalized["action_required"] is None
+    assert normalized["panel_provenance"] == {}

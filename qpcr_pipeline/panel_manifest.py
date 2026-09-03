@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 import tempfile
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 
@@ -19,6 +19,9 @@ from qpcr_pipeline.panel import (
     TargetGroup,
     validate_panel_definition,
 )
+
+if TYPE_CHECKING:
+    from qpcr_pipeline.config import PanelConfig
 
 _PROPOSAL_FIELDS = {"schema_version", "status", "definition"}
 _APPROVED_FIELDS = {
@@ -75,6 +78,13 @@ class PanelResult:
     manifest_path: Path | None
     target_mode: str | None
     non_target_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PanelPreflight:
+    status: Literal["READY", "ACTION_REQUIRED", "LEGACY"]
+    proposal_path: Path | None = None
+    approved_manifest_path: Path | None = None
 
 
 def _require_fields(raw: object, expected: set[str], label: str) -> dict:
@@ -431,4 +441,43 @@ def materialize_approved_panel(source_path: Path, outdir: Path) -> PanelResult:
         manifest_path=destination,
         target_mode=manifest.definition.target.mode,
         non_target_count=len(manifest.definition.non_targets),
+    )
+
+
+def prepare_panel_preflight(
+    panel: PanelConfig | None,
+    outdir: Path,
+    *,
+    target_name: str,
+) -> PanelPreflight:
+    if panel is None:
+        return PanelPreflight(status="LEGACY")
+    if panel.proposal is not None:
+        if panel.proposal.target.name.strip() != target_name.strip():
+            raise ValueError(
+                f"Panel target {panel.proposal.target.name!r} does not match "
+                f"pipeline target {target_name!r}."
+            )
+        proposal_path = Path(outdir) / "panel_proposal.yaml"
+        proposal = PanelProposal(
+            schema_version=1,
+            status="PROPOSED",
+            definition=panel.proposal,
+        )
+        write_panel_proposal(proposal, proposal_path)
+        return PanelPreflight(
+            status="ACTION_REQUIRED",
+            proposal_path=proposal_path,
+        )
+    if panel.frozen_manifest is None:
+        raise ValueError("Panel preflight requires a proposal or frozen manifest.")
+    manifest = load_approved_panel_manifest(panel.frozen_manifest)
+    if manifest.definition.target.name.strip() != target_name.strip():
+        raise ValueError(
+            f"Approved panel target {manifest.definition.target.name!r} does not "
+            f"match pipeline target {target_name!r}."
+        )
+    return PanelPreflight(
+        status="READY",
+        approved_manifest_path=panel.frozen_manifest,
     )

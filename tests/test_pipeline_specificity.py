@@ -23,7 +23,7 @@ from qpcr_pipeline.local_input import LocalSequenceRecord
 from qpcr_pipeline.models import EvaluationSet
 from qpcr_pipeline.pipeline import run_pipeline
 from qpcr_pipeline.primer_design import AssayCandidate, DesignedOligo, PrimerDesignResult
-from panel_fixtures import proposal_panel_config
+from panel_fixtures import approved_panel_config
 from qpcr_pipeline.specificity_matching import enumerate_compatible_hits
 from pipeline_checkpoint_fixtures import (
     checkpoint_alignment,
@@ -133,7 +133,7 @@ class PipelineSpecificityTests(unittest.TestCase):
             config = PipelineConfig(
                 target_name="target",
                 input_fasta=FIXTURE_FASTA,
-                panel=proposal_panel_config("target"),
+                panel=approved_panel_config(root, "target"),
                 alignment=AlignmentConfig(enabled=True),
                 conservation=ConservationConfig(enabled=True),
                 primer_design=PrimerDesignConfig(enabled=True),
