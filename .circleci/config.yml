@@ -18,6 +18,14 @@ jobs:
           name: Run normal test suite
           command: python -m pytest -q
 
+      - run:
+          name: Smoke test installed panel approval CLI
+          command: |
+            qpcr-pipeline panel approve --help
+            qpcr-pipeline panel approve tests/fixtures/panels/west_nile_proposal.yaml --output approved-panel-smoke.json
+            python -c "import json; p=json.load(open('approved-panel-smoke.json', encoding='utf-8')); assert p['status']=='APPROVED'; assert p['approved_by_user'] is True; assert p['proposal_sha256'].startswith('sha256:')"
+            rm approved-panel-smoke.json
+
       - when:
           condition:
             equal: [main, << pipeline.git.branch >>]
