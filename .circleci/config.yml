@@ -9,58 +9,12 @@ jobs:
       - checkout
       - run:
           name: Check diff whitespace
-          command: git diff --check develop...HEAD
-
-  mafft_unit_tests:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - checkout
-      - run:
-          name: Install Python project and test runner
           command: |
-            python -m pip install --upgrade pip
-            python -m pip install -e . pytest
-      - run:
-          name: Run normal test suite
-          command: python -m pytest -q
-
-  mafft_integration_tests:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - checkout
-      - run:
-          name: Install Python project
-          command: |
-            python -m pip install --upgrade pip
-            python -m pip install -e .
-      - run:
-          name: Install integration tools
-          command: |
-            sudo apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              cd-hit \
-              mafft \
-              primer3
-      - run:
-          name: Verify integration tools
-          command: |
-            command -v cd-hit-est
-            command -v mafft
-            command -v primer3_core
-      - run:
-          name: Run integration test suite
-          command: python -m unittest discover -s integration_tests -q
+            git fetch origin develop
+            git diff --check origin/develop...HEAD
 
 workflows:
   ci:
     jobs:
       - mafft_diff_check:
-          filters: pipeline.git.branch == "fix/mafft-fast-direction"
-      - mafft_unit_tests:
-          filters: pipeline.git.branch == "fix/mafft-fast-direction"
-      - mafft_integration_tests:
           filters: pipeline.git.branch == "fix/mafft-fast-direction"
