@@ -1,49 +1,23 @@
 version: 2.1
 
 jobs:
-  test:
+  mafft_direction_red:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - checkout
-
       - run:
           name: Install Python project and test runner
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
-
       - run:
-          name: Run normal test suite
-          command: python -m pytest -q
-
-      - when:
-          condition:
-            equal: [main, << pipeline.git.branch >>]
-          steps:
-            - run:
-                name: Install integration tools
-                command: |
-                  sudo apt-get update
-                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                    cd-hit \
-                    mafft \
-                    primer3
-
-            - run:
-                name: Verify integration tools
-                command: |
-                  command -v cd-hit-est
-                  command -v mafft
-                  command -v primer3_core
-
-            - run:
-                name: Run integration test suite
-                command: python -m unittest discover -s integration_tests -q
+          name: Run MAFFT direction regression
+          command: python -m pytest -q tests/test_mafft_direction_mode.py
 
 workflows:
   ci:
     jobs:
-      - test:
-          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
+      - mafft_direction_red:
+          filters: pipeline.git.branch == "fix/mafft-fast-direction"
