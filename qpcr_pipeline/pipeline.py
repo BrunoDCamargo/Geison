@@ -27,7 +27,11 @@ from qpcr_pipeline.execution import STAGE_ORDER, ExecutionPolicy
 from qpcr_pipeline.inclusivity import evaluate_inclusivity
 from qpcr_pipeline.local_input import LocalSequenceRecord, load_genbank, load_local_sequences
 from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen_dataset
-from qpcr_pipeline.panel_manifest import prepare_panel_preflight
+from qpcr_pipeline.panel_manifest import (
+    PanelResult,
+    materialize_approved_panel,
+    prepare_panel_preflight,
+)
 from qpcr_pipeline.planning import plan_pipeline
 from qpcr_pipeline.provenance import (
     build_input_provenance,
@@ -451,6 +455,21 @@ def _run_stage(
     refresh_online_input: bool,
     execution_missing_evidence: tuple[str, ...] = (),
 ) -> object:
+    if stage == "panel":
+        if config.panel is None:
+            return PanelResult(
+                status="LEGACY",
+                manifest_sha256=None,
+                manifest_path=None,
+                target_mode=None,
+                non_target_count=0,
+            )
+        if config.panel.frozen_manifest is None:
+            raise RuntimeError(
+                "Panel proposal reached checkpoint execution before approval."
+            )
+        return materialize_approved_panel(config.panel.frozen_manifest, output_dir)
+
     if stage == "input":
         return _run_input(
             config,

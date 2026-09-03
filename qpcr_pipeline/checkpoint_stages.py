@@ -16,6 +16,7 @@ from qpcr_pipeline.checkpoint_codecs import (
     CONSERVATION_CODEC,
     INCLUSIVITY_CODEC,
     INPUT_CODEC,
+    PANEL_CODEC,
     PRIMER_DESIGN_CODEC,
     QC_CODEC,
     RANKING_CODEC,
@@ -29,6 +30,7 @@ from qpcr_pipeline.checkpointing import (
 from qpcr_pipeline.config import PipelineConfig
 from qpcr_pipeline.execution import STAGE_DEPENDENCIES, STAGE_ORDER
 from qpcr_pipeline.ncbi import validate_frozen_dataset
+from qpcr_pipeline.panel_manifest import load_approved_panel_manifest
 from qpcr_pipeline.primer_design import primer3_required
 
 
@@ -44,6 +46,7 @@ class StageCheckpointDefinition:
 
 
 _CODECS = {
+    "panel": PANEL_CODEC,
     "input": INPUT_CODEC,
     "qc": QC_CODEC,
     "clustering": CLUSTERING_CODEC,
@@ -101,6 +104,10 @@ def _input_parameters(config: PipelineConfig) -> dict[str, object]:
 def stage_parameters(stage: str, config: PipelineConfig) -> Mapping[str, object]:
     if stage not in STAGE_DEFINITIONS:
         raise ValueError(f"unknown checkpoint stage: {stage}")
+    if stage == "panel":
+        if config.panel is None:
+            return {"mode": "LEGACY"}
+        return {"mode": "APPROVED_MANIFEST"}
     if stage == "input":
         return _input_parameters(config)
     if stage == "qc":
@@ -128,6 +135,17 @@ def stage_parameters(stage: str, config: PipelineConfig) -> Mapping[str, object]
 def stage_input_identities(stage: str, config: PipelineConfig) -> Mapping[str, object]:
     if stage not in STAGE_DEFINITIONS:
         raise ValueError(f"unknown checkpoint stage: {stage}")
+    if stage == "panel":
+        if config.panel is None:
+            return {}
+        if config.panel.frozen_manifest is None:
+            raise ValueError("Panel proposal cannot enter checkpoint planning.")
+        load_approved_panel_manifest(config.panel.frozen_manifest)
+        return {
+            "approved_panel": {
+                "sha256": file_sha256(config.panel.frozen_manifest),
+            }
+        }
     if stage == "input":
         selected = config.selected_input
         if isinstance(selected, tuple):
@@ -292,7 +310,9 @@ def _paths(*values: object) -> tuple[Path, ...]:
 
 def stage_outputs(stage: str, result: object, outdir: Path) -> tuple[Path, ...]:
     outdir = Path(outdir)
-    if stage == "input":
+    if stage == "panel":
+        values = _paths(getattr(result, "manifest_path", None))
+    elif stage == "input":
         candidates = (
             outdir / "ncbi_dataset" / "records.gb",
             outdir / "ncbi_dataset" / "dataset_manifest.json",

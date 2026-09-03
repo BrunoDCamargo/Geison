@@ -29,6 +29,9 @@ from qpcr_pipeline.checkpoint_stages import (
     stage_parameters,
     stage_tool_identities,
 )
+from qpcr_pipeline.checkpointing import file_sha256
+from qpcr_pipeline.panel_manifest import PanelResult
+from tests.panel_fixtures import approved_panel_config, proposal_panel_config
 
 
 class FakeToolIdentityProvider:
@@ -52,9 +55,42 @@ def _config(fasta: Path, **changes):
 
 def test_registry_contains_every_pipeline_stage():
     assert tuple(STAGE_DEFINITIONS) == (
-        "input", "qc", "clustering", "alignment", "conservation",
+        "panel", "input", "qc", "clustering", "alignment", "conservation",
         "primer_design", "inclusivity", "specificity", "ranking",
     )
+
+
+def test_panel_parameters_distinguish_legacy_and_approved_manifest(tmp_path):
+    fasta = tmp_path / "target.fasta"
+    legacy = _config(fasta)
+    approved = replace(
+        legacy,
+        panel=approved_panel_config(tmp_path, legacy.target_name),
+    )
+    assert stage_parameters("panel", legacy) == {"mode": "LEGACY"}
+    assert stage_parameters("panel", approved) == {"mode": "APPROVED_MANIFEST"}
+
+
+def test_panel_identity_hashes_approved_manifest_bytes(tmp_path):
+    fasta = tmp_path / "target.fasta"
+    config = replace(
+        _config(fasta),
+        panel=approved_panel_config(tmp_path, "target"),
+    )
+    assert config.panel is not None
+    assert config.panel.frozen_manifest is not None
+    assert stage_input_identities("panel", config) == {
+        "approved_panel": {"sha256": file_sha256(config.panel.frozen_manifest)}
+    }
+
+
+def test_panel_proposal_cannot_enter_checkpoint_planning(tmp_path):
+    config = replace(
+        _config(tmp_path / "target.fasta"),
+        panel=proposal_panel_config("target"),
+    )
+    with pytest.raises(ValueError, match="proposal.*checkpoint planning"):
+        stage_input_identities("panel", config)
 
 
 def test_specificity_parameter_change_is_isolated_to_specificity(tmp_path):
@@ -213,6 +249,18 @@ def test_conservation_never_declares_root_report_alias(tmp_path):
     outputs = stage_outputs("conservation", result, outdir)
     assert outdir / "report.html" not in outputs
     assert result.report_path in outputs
+
+
+def test_panel_declares_materialized_manifest_as_output(tmp_path):
+    outdir = tmp_path / "run"
+    result = PanelResult(
+        "APPROVED",
+        "sha256:" + "a" * 64,
+        outdir / "panel" / "approved_panel.json",
+        "broad_detection",
+        0,
+    )
+    assert stage_outputs("panel", result, outdir) == (result.manifest_path,)
 
 
 def test_ranking_declares_root_report_only_when_owned(tmp_path):

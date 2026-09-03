@@ -11,13 +11,22 @@ from qpcr_pipeline.config import (
     AlignmentConfig,
     ClusteringConfig,
     NcbiInputConfig,
+    PanelConfig,
     PipelineConfig,
+    PrimerDesignConfig,
     SpecificityConfig,
 )
 from qpcr_pipeline.execution import ExecutionPolicy, STAGE_ORDER
 from qpcr_pipeline.ncbi import NcbiFetchedRecord
+from qpcr_pipeline.panel import PanelNonTarget
+from qpcr_pipeline.panel_manifest import (
+    PanelProposal,
+    approve_panel_proposal,
+    write_panel_proposal,
+)
 from qpcr_pipeline.pipeline import run_pipeline
 from pipeline_checkpoint_fixtures import checkpoint_alignment
+from tests.panel_fixtures import proposal_panel_config
 
 
 def _write_fasta(path: Path):
@@ -42,6 +51,56 @@ def _default_run(tmp_path: Path):
     config = PipelineConfig(target_name="target", input_fasta=fasta)
     run_pipeline(config, outdir)
     return config, outdir
+
+
+def _approved_panel_with_usutu(directory: Path, criticality: str) -> PanelConfig:
+    proposed = proposal_panel_config("target")
+    assert proposed.proposal is not None
+    definition = replace(
+        proposed.proposal,
+        non_targets=(
+            PanelNonTarget(
+                name="Usutu virus",
+                taxid=64286,
+                criticality=criticality,
+                dataset_roles=("CHALLENGE",),
+                reasons=("differential diagnosis",),
+                proposed_by=("manual",),
+            ),
+        ),
+    )
+    directory.mkdir()
+    proposal_path = directory / "panel_proposal.yaml"
+    approved_path = directory / "approved_panel.json"
+    write_panel_proposal(PanelProposal(1, "PROPOSED", definition), proposal_path)
+    approve_panel_proposal(proposal_path, approved_path)
+    return PanelConfig(frozen_manifest=approved_path)
+
+
+def test_changed_approved_panel_invalidates_every_downstream_stage(tmp_path):
+    fasta = tmp_path / "target.fasta"
+    outdir = tmp_path / "run"
+    _write_fasta(fasta)
+    first_panel = _approved_panel_with_usutu(tmp_path / "first", "CRITICAL")
+    second_panel = _approved_panel_with_usutu(tmp_path / "second", "IMPORTANT")
+    first = PipelineConfig(
+        target_name="target",
+        input_fasta=fasta,
+        panel=first_panel,
+        primer_design=PrimerDesignConfig(enabled=False),
+    )
+
+    run_pipeline(first, outdir)
+    assert (outdir / ".checkpoints" / "panel" / "manifest.json").is_file()
+
+    run_pipeline(first, outdir, execution=ExecutionPolicy(resume=True))
+    assert _actions(outdir) == {stage: "REUSE" for stage in STAGE_ORDER}
+
+    changed = replace(first, panel=second_panel)
+    run_pipeline(changed, outdir, execution=ExecutionPolicy(resume=True))
+    actions = _actions(outdir)
+    assert actions["panel"] == "RUN"
+    assert all(actions[stage] == "FORCED" for stage in STAGE_ORDER[1:])
 
 
 def test_normal_run_writes_all_stage_checkpoints_and_does_not_reuse(tmp_path):
@@ -90,6 +149,7 @@ def test_specificity_parameter_change_does_not_recalculate_alignment_or_conserva
     run_pipeline(changed, outdir, execution=ExecutionPolicy(resume=True))
 
     assert _actions(outdir) == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "REUSE",
@@ -109,6 +169,7 @@ def test_clustering_parameter_change_invalidates_complete_dependent_chain(tmp_pa
     run_pipeline(changed, outdir, execution=ExecutionPolicy(resume=True))
 
     assert _actions(outdir) == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "RUN",
@@ -131,6 +192,7 @@ def test_force_inclusivity_keeps_independent_specificity_reusable(tmp_path):
     )
 
     assert _actions(outdir) == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "REUSE",
@@ -153,6 +215,7 @@ def test_valid_from_specificity_reuses_boundary_and_forces_selected_subgraph(tmp
     )
 
     assert _actions(outdir) == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "REUSE",
@@ -195,6 +258,7 @@ def test_corrupt_alignment_output_reruns_alignment_and_descendants_only(tmp_path
     run_pipeline(config, outdir, execution=ExecutionPolicy(resume=True))
 
     assert _actions(outdir) == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "REUSE",
@@ -220,7 +284,7 @@ def test_interrupted_run_preserves_completed_upstream_and_resume_finishes(tmp_pa
         with pytest.raises(RuntimeError, match="simulated interruption"):
             run_pipeline(config, outdir)
 
-    for stage in STAGE_ORDER[:7]:
+    for stage in STAGE_ORDER[: STAGE_ORDER.index("specificity")]:
         assert _manifest(outdir, stage)["status"] == "COMPLETE"
     assert _manifest(outdir, "specificity")["status"] == "FAILED"
     assert not (outdir / ".checkpoints" / "ranking" / "manifest.json").exists()
@@ -228,6 +292,7 @@ def test_interrupted_run_preserves_completed_upstream_and_resume_finishes(tmp_pa
     run_pipeline(config, outdir, execution=ExecutionPolicy(resume=True))
 
     assert _actions(outdir) == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "REUSE",
@@ -248,7 +313,7 @@ def test_geison_version_change_invalidates_entire_chain(tmp_path):
     with patch("qpcr_pipeline.checkpoint_stages.geison_version", return_value="999.0.0"):
         run_pipeline(config, outdir, execution=ExecutionPolicy(resume=True))
 
-    assert _actions(outdir)["input"] == "RUN"
+    assert _actions(outdir)["panel"] == "RUN"
     assert all(
         _actions(outdir)[stage] == "FORCED"
         for stage in STAGE_ORDER[1:]
@@ -296,6 +361,7 @@ def test_mafft_version_change_invalidates_alignment_and_descendants_only(tmp_pat
         )
 
     assert _actions(outdir) == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "REUSE",
@@ -348,4 +414,7 @@ def test_forced_online_input_refresh_changes_result_fingerprint_and_forces_downs
     assert first_client.fetch_count == 1
     assert second_client.fetch_count == 1
     assert second_fingerprint != first_fingerprint
-    assert _actions(outdir) == {stage: "FORCED" for stage in STAGE_ORDER}
+    assert _actions(outdir) == {
+        "panel": "REUSE",
+        **{stage: "FORCED" for stage in STAGE_ORDER[1:]},
+    }

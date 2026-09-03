@@ -7,6 +7,7 @@ from typing import Literal, Mapping
 
 
 StageName = Literal[
+    "panel",
     "input",
     "qc",
     "clustering",
@@ -20,6 +21,7 @@ StageName = Literal[
 StageAction = Literal["RUN", "REUSE", "FORCED"]
 
 STAGE_ORDER: tuple[StageName, ...] = (
+    "panel",
     "input",
     "qc",
     "clustering",
@@ -32,7 +34,8 @@ STAGE_ORDER: tuple[StageName, ...] = (
 )
 
 STAGE_DEPENDENCIES: dict[StageName, tuple[StageName, ...]] = {
-    "input": (),
+    "panel": (),
+    "input": ("panel",),
     "qc": ("input",),
     "clustering": ("qc",),
     "alignment": ("clustering",),

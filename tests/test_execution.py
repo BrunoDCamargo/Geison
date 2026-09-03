@@ -1,6 +1,7 @@
 import pytest
 
 from qpcr_pipeline.execution import (
+    STAGE_DEPENDENCIES,
     STAGE_ORDER,
     ExecutionPolicy,
     plan_from_validity,
@@ -15,6 +16,20 @@ def _actions(decisions):
 
 def _all_valid():
     return {stage: True for stage in STAGE_ORDER}
+
+
+def test_panel_is_first_stage_and_input_depends_on_it():
+    assert STAGE_ORDER[0] == "panel"
+    assert STAGE_DEPENDENCIES["panel"] == ()
+    assert STAGE_DEPENDENCIES["input"] == ("panel",)
+
+
+def test_resume_invalid_panel_forces_every_downstream_stage():
+    reusable = _all_valid()
+    reusable["panel"] = False
+    actions = _actions(plan_from_validity(ExecutionPolicy(resume=True), reusable))
+    assert actions["panel"] == "RUN"
+    assert all(actions[stage] == "FORCED" for stage in STAGE_ORDER[1:])
 
 
 def test_specificity_descendants_only_include_ranking():
@@ -69,6 +84,7 @@ def test_resume_invalid_specificity_forces_only_specificity_and_ranking():
     reusable["specificity"] = False
     actions = _actions(plan_from_validity(ExecutionPolicy(resume=True), reusable))
     assert actions == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "REUSE",
@@ -86,6 +102,7 @@ def test_resume_invalid_clustering_forces_entire_dependent_chain():
     reusable["clustering"] = False
     actions = _actions(plan_from_validity(ExecutionPolicy(resume=True), reusable))
     assert actions == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "RUN",
@@ -120,6 +137,7 @@ def test_from_step_specificity_runs_specificity_and_ranking_only():
     policy = ExecutionPolicy(from_step="specificity")
     actions = _actions(plan_from_validity(policy, _all_valid()))
     assert actions == {
+        "panel": "REUSE",
         "input": "REUSE",
         "qc": "REUSE",
         "clustering": "REUSE",

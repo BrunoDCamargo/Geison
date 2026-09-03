@@ -10,6 +10,7 @@ from qpcr_pipeline.checkpoint_codecs import (
     CONSERVATION_CODEC,
     INCLUSIVITY_CODEC,
     INPUT_CODEC,
+    PANEL_CODEC,
     PRIMER_DESIGN_CODEC,
     QC_CODEC,
     RANKING_CODEC,
@@ -32,6 +33,7 @@ from qpcr_pipeline.inclusivity import (
 )
 from qpcr_pipeline.local_input import LocalSequenceRecord
 from qpcr_pipeline.models import DiscoverySet, EvaluationSet, TargetSequenceSet
+from qpcr_pipeline.panel_manifest import PanelResult
 from qpcr_pipeline.primer_design import (
     AssayCandidate,
     CandidateRegion,
@@ -51,6 +53,33 @@ from qpcr_pipeline.specificity import (
 def _round_trip(codec, value, outdir):
     payload = codec.encode(value, outdir)
     return payload, codec.decode(payload, outdir)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        PanelResult("LEGACY", None, None, None, 0),
+        PanelResult(
+            "APPROVED",
+            "sha256:" + "a" * 64,
+            Path("panel") / "approved_panel.json",
+            "SPECIES",
+            2,
+        ),
+    ],
+)
+def test_panel_round_trip_is_exact(tmp_path, value):
+    outdir = tmp_path / "run"
+    if value.manifest_path is not None:
+        value = PanelResult(
+            value.status,
+            value.manifest_sha256,
+            outdir / value.manifest_path,
+            value.target_mode,
+            value.non_target_count,
+        )
+    _, decoded = _round_trip(PANEL_CODEC, value, outdir)
+    assert decoded == value
 
 
 def test_input_records_round_trip_and_preserve_required_feature_metadata(tmp_path):

@@ -17,6 +17,7 @@ from qpcr_pipeline.clustering import ClusteringResult
 from qpcr_pipeline.conservation import ConservationResult
 from qpcr_pipeline.inclusivity import InclusivityResult
 from qpcr_pipeline.local_input import LocalSequenceRecord
+from qpcr_pipeline.panel_manifest import PanelResult
 from qpcr_pipeline.primer_design import PrimerDesignResult
 from qpcr_pipeline.qc import QCResult
 from qpcr_pipeline.ranking import RankingResult
@@ -324,6 +325,7 @@ class _StructuralCodec(Generic[T]):
 INPUT_CODEC = _StructuralCodec[tuple[LocalSequenceRecord, ...]](
     tuple[LocalSequenceRecord, ...]
 )
+PANEL_CODEC = _StructuralCodec[PanelResult](PanelResult)
 QC_CODEC = _StructuralCodec[QCResult](QCResult)
 CLUSTERING_CODEC = _StructuralCodec[ClusteringResult](ClusteringResult)
 ALIGNMENT_CODEC = _StructuralCodec[AlignmentResult](AlignmentResult)
