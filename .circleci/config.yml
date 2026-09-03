@@ -1,7 +1,17 @@
 version: 2.1
 
 jobs:
-  mafft_direction_gate:
+  mafft_diff_check:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Check diff whitespace
+          command: git diff --check develop...HEAD
+
+  mafft_unit_tests:
     docker:
       - image: cimg/python:3.12
     resource_class: small
@@ -12,6 +22,21 @@ jobs:
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
+      - run:
+          name: Run normal test suite
+          command: python -m pytest -q
+
+  mafft_integration_tests:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Install Python project
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -e .
       - run:
           name: Install integration tools
           command: |
@@ -27,17 +52,15 @@ jobs:
             command -v mafft
             command -v primer3_core
       - run:
-          name: Check diff whitespace
-          command: git diff --check develop...HEAD
-      - run:
-          name: Run normal test suite
-          command: python -m pytest -q
-      - run:
           name: Run integration test suite
           command: python -m unittest discover -s integration_tests -q
 
 workflows:
   ci:
     jobs:
-      - mafft_direction_gate:
+      - mafft_diff_check:
+          filters: pipeline.git.branch == "fix/mafft-fast-direction"
+      - mafft_unit_tests:
+          filters: pipeline.git.branch == "fix/mafft-fast-direction"
+      - mafft_integration_tests:
           filters: pipeline.git.branch == "fix/mafft-fast-direction"
