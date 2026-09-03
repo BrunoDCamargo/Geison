@@ -105,3 +105,38 @@ def test_colab_flow_has_operational_documentation():
     assert "NCBI_EMAIL" in text
     assert "--resume" in text
     assert "report.html" in text
+
+
+def test_colab_walks_through_panel_approval_before_resume():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+    markdown = _cell_text(notebook, "markdown")
+    docs = DOC_PATH.read_text(encoding="utf-8")
+
+    required_code = [
+        "panel:",
+        "proposal:",
+        "PANEL_APPROVAL_REQUIRED",
+        "panel_proposal.yaml",
+        "qpcr-pipeline panel approve",
+        "approved_panel.json",
+        "frozen_manifest",
+        "--resume",
+        "run_manifest.json",
+    ]
+    for marker in required_code:
+        assert marker in code
+
+    assert code.index("proposal:") < code.index("PANEL_APPROVAL_REQUIRED")
+    assert code.index("PANEL_APPROVAL_REQUIRED") < code.index("qpcr-pipeline panel approve")
+    assert code.index("qpcr-pipeline panel approve") < code.index("frozen_manifest")
+
+    for marker in [
+        "panel.proposal",
+        "ACTION_REQUIRED",
+        "PANEL_APPROVAL_REQUIRED",
+        "panel approve",
+        "frozen_manifest",
+        "--resume",
+    ]:
+        assert marker in markdown or marker in docs
