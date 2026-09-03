@@ -70,6 +70,37 @@ recalculado ou reaproveitado.
 Sem `--outdir`, o comando continua apenas carregando e validando a configuração,
 e controles de retomada não são aceitos.
 
+## Panel approval workflow
+
+O painel de alvo, grupos obrigatórios e não alvos é uma entrada científica
+explícita. O fluxo de aprovação é:
+
+1. Configure `panel.proposal` e execute com `--outdir`.
+2. O Geison retorna `ACTION_REQUIRED` e grava `panel_proposal.yaml`.
+3. Revise ou edite a proposta como uma entrada científica.
+4. Congele a proposta revisada:
+
+   ```bash
+   qpcr-pipeline panel approve panel_proposal.yaml --output approved_panel.json
+   ```
+
+5. Substitua `panel.proposal` na configuração:
+
+   ```yaml
+   panel:
+     frozen_manifest: approved_panel.json
+   ```
+
+6. Retome a execução:
+
+   ```bash
+   qpcr-pipeline run config.yaml --outdir run1 --resume
+   ```
+
+O manifesto congelado faz parte da proveniência científica e deve ser versionado
+ou arquivado junto com as entradas da execução. A construção automática do painel
+não faz parte deste subprojeto.
+
 ## Clustering do Discovery Set
 
 O clustering é opcional e vem desabilitado por padrão. Quando habilitado, a

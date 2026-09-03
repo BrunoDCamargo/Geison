@@ -70,6 +70,13 @@ def _render_dry_run(report) -> str:
             "Missing required tools: "
             + ", ".join(report.environment.missing_required_tools)
         )
+    if report.panel_action_required:
+        lines.append("Panel approval required before scientific execution.")
+        if report.panel_proposal_would_be_written is not None:
+            lines.append(
+                "Proposal would be written to: "
+                + report.panel_proposal_would_be_written
+            )
     return "\n".join(lines)
 
 

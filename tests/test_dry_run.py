@@ -7,6 +7,7 @@ from qpcr_pipeline.dry_run import dry_run_pipeline
 from qpcr_pipeline.execution import ExecutionPolicy
 from qpcr_pipeline.pipeline import run_pipeline
 from pipeline_checkpoint_fixtures import checkpoint_alignment
+from tests.panel_fixtures import approved_panel_config, proposal_panel_config
 
 
 class FakeInspector:
@@ -49,6 +50,52 @@ def _config(tmp_path: Path) -> PipelineConfig:
     fasta = tmp_path / "target.fasta"
     fasta.write_text(">s1\nACGTACGTACGT\n>s2\nACGTACGAACGT\n", encoding="utf-8")
     return PipelineConfig(target_name="target", input_fasta=fasta)
+
+
+def _panel_proposal_config(tmp_path: Path) -> PipelineConfig:
+    return PipelineConfig(
+        target_name="target",
+        input_fasta=_config(tmp_path).input_fasta,
+        panel=proposal_panel_config("target"),
+    )
+
+
+def _frozen_panel_config(tmp_path: Path) -> PipelineConfig:
+    return PipelineConfig(
+        target_name="target",
+        input_fasta=_config(tmp_path).input_fasta,
+        panel=approved_panel_config(tmp_path, "target"),
+    )
+
+
+def test_dry_run_proposal_reports_action_required_without_writing(tmp_path):
+    config = _panel_proposal_config(tmp_path)
+    outdir = tmp_path / "run"
+
+    report = dry_run_pipeline(
+        config,
+        outdir,
+        inspector=FakeInspector(_environment()),
+    )
+
+    assert report.panel_action_required is True
+    assert report.panel_proposal_would_be_written == str(
+        outdir / "panel_proposal.yaml"
+    )
+    assert not outdir.exists()
+
+
+def test_dry_run_with_frozen_panel_starts_with_panel_stage(tmp_path):
+    config = _frozen_panel_config(tmp_path)
+
+    report = dry_run_pipeline(
+        config,
+        tmp_path / "run",
+        inspector=FakeInspector(_environment()),
+    )
+
+    assert report.panel_action_required is False
+    assert report.decisions[0].stage == "panel"
 
 
 def test_dry_run_does_not_create_output_directory(tmp_path):

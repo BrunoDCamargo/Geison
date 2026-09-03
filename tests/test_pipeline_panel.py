@@ -1,6 +1,12 @@
 import json
+from dataclasses import replace
+from pathlib import Path
 
-from qpcr_pipeline.config import PipelineConfig
+import pytest
+
+from qpcr_pipeline.config import PanelConfig, PipelineConfig, PrimerDesignConfig
+from qpcr_pipeline.execution import ExecutionPolicy
+from qpcr_pipeline.panel_manifest import approve_panel_proposal
 from qpcr_pipeline.pipeline import run_pipeline
 from panel_fixtures import proposal_panel_config
 
@@ -80,3 +86,49 @@ def test_action_required_replaces_stale_summary_and_qc_report(tmp_path):
     assert summary["status"] == "ACTION_REQUIRED"
     assert summary["action_required_code"] == "PANEL_APPROVAL_REQUIRED"
     assert not (outdir / "qc_report.json").exists()
+
+
+def test_proposal_approve_rerun_reaches_checkpointed_pipeline(tmp_path):
+    proposal_config = panel_proposal_pipeline_config(tmp_path)
+    outdir = tmp_path / "run"
+    first = run_pipeline(proposal_config, outdir)
+    assert first.status == "ACTION_REQUIRED"
+
+    approved = tmp_path / "approved_panel.json"
+    approve_panel_proposal(outdir / "panel_proposal.yaml", approved)
+    approved_config = replace(
+        proposal_config,
+        panel=PanelConfig(frozen_manifest=approved),
+        primer_design=PrimerDesignConfig(enabled=False),
+    )
+    second = run_pipeline(
+        approved_config,
+        outdir,
+        execution=ExecutionPolicy(resume=True),
+    )
+
+    assert second.status in {"PARTIAL", "COMPLETED"}
+    assert (outdir / "panel" / "approved_panel.json").is_file()
+    assert (outdir / ".checkpoints" / "panel" / "manifest.json").is_file()
+    assert (outdir / ".checkpoints" / "input" / "manifest.json").is_file()
+
+
+def test_frozen_panel_target_must_match_pipeline_target(tmp_path):
+    approved = tmp_path / "approved_panel.json"
+    approve_panel_proposal(
+        Path("tests/fixtures/panels/west_nile_proposal.yaml"),
+        approved,
+    )
+    fasta = tmp_path / "target.fasta"
+    fasta.write_text(">s1\nACGTACGTACGT\n", encoding="utf-8")
+    config = PipelineConfig(
+        target_name="Zika virus",
+        input_fasta=fasta,
+        panel=PanelConfig(frozen_manifest=approved),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Approved panel target 'West Nile virus'.*pipeline target 'Zika virus'",
+    ):
+        run_pipeline(config, tmp_path / "run")

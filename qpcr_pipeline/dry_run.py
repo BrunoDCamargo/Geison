@@ -16,6 +16,8 @@ class DryRunReport:
     target_name: str
     decisions: tuple[StageDecision, ...]
     environment: EnvironmentReport
+    panel_action_required: bool = False
+    panel_proposal_would_be_written: str | None = None
 
 
 class _EnvironmentToolIdentityProvider:
@@ -40,6 +42,19 @@ def dry_run_pipeline(
     tool_identity_provider: ToolIdentityProvider | None = None,
 ) -> DryRunReport:
     environment = (inspector or EnvironmentInspector()).inspect(config)
+    if config.panel is not None and config.panel.proposal is not None:
+        proposal_path = (
+            None
+            if outdir is None
+            else str(Path(outdir) / "panel_proposal.yaml")
+        )
+        return DryRunReport(
+            target_name=config.target_name,
+            environment=environment,
+            decisions=(),
+            panel_action_required=True,
+            panel_proposal_would_be_written=proposal_path,
+        )
     provider = tool_identity_provider or _EnvironmentToolIdentityProvider(environment)
     plan = plan_pipeline(
         config,

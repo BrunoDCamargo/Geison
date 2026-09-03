@@ -1,10 +1,27 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from qpcr_pipeline import cli
 from qpcr_pipeline.config import PipelineConfig
 from qpcr_pipeline.pipeline import RunSummary
+
+
+def test_dry_run_render_explains_panel_approval_destination(tmp_path):
+    proposal_path = tmp_path / "run" / "panel_proposal.yaml"
+    report = SimpleNamespace(
+        target_name="target",
+        decisions=(),
+        environment=SimpleNamespace(missing_required_tools=()),
+        panel_action_required=True,
+        panel_proposal_would_be_written=str(proposal_path),
+    )
+
+    rendered = cli._render_dry_run(report)
+
+    assert "Panel approval required before scientific execution." in rendered
+    assert f"Proposal would be written to: {proposal_path}" in rendered
 
 
 def test_panel_approve_command_writes_frozen_manifest(tmp_path, monkeypatch, capsys):
