@@ -23,6 +23,7 @@ from qpcr_pipeline.config import (
 )
 from qpcr_pipeline.ncbi import NcbiFetchedRecord, acquire_ncbi_dataset
 from qpcr_pipeline.pipeline import run_pipeline
+from panel_fixtures import proposal_panel_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -444,6 +445,7 @@ class MinimalPipelineRunTests(unittest.TestCase):
                 PipelineConfig(
                     target_name="synthetic-target",
                     input_fasta=fasta_path,
+                    panel=proposal_panel_config("synthetic-target"),
                     alignment=AlignmentConfig(enabled=True, reference_id="seq-1"),
                     conservation=ConservationConfig(
                         enabled=True, window_size=100, step_size=50
@@ -561,6 +563,7 @@ class MinimalPipelineRunTests(unittest.TestCase):
                 PipelineConfig(
                     target_name="synthetic-target",
                     input_fasta=fasta_path,
+                    panel=proposal_panel_config("synthetic-target"),
                     clustering=ClusteringConfig(enabled=True),
                     alignment=AlignmentConfig(enabled=True, reference_id="s1"),
                     conservation=ConservationConfig(

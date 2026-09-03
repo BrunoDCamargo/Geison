@@ -375,6 +375,7 @@ class PipelineConfigTests(unittest.TestCase):
             f"input:\n  fasta: {FIXTURE_FASTA.as_posix()}\n"
             "alignment:\n  enabled: true\n"
             "conservation:\n  enabled: true\n"
+            "panel:\n  frozen_manifest: approved.json\n"
         )
         config = self._load_yaml(minimal_yaml)
 
@@ -408,6 +409,7 @@ class PipelineConfigTests(unittest.TestCase):
             "alignment:\n  enabled: true\n"
             "conservation:\n  enabled: true\n"
             "primer_design:\n  enabled: true\n"
+            "panel:\n  frozen_manifest: approved.json\n"
         )
         self.assertEqual(self._load_yaml(base).inclusivity, InclusivityConfig())
 

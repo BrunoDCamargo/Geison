@@ -6,6 +6,7 @@ from qpcr_pipeline.config import (
     AlignmentConfig,
     ConservationConfig,
     OffTargetConfig,
+    PanelConfig,
     PipelineConfig,
     PrimerDesignConfig,
     SpecificityConfig,
@@ -32,6 +33,7 @@ class SpecificityConfigTests(unittest.TestCase):
             "alignment:\n  enabled: true\n"
             "conservation:\n  enabled: true\n"
             "primer_design:\n  enabled: true\n"
+            "panel:\n  frozen_manifest: approved.json\n"
         )
 
     def test_defaults_are_disabled_and_have_no_off_targets(self):
@@ -132,6 +134,7 @@ class SpecificityConfigTests(unittest.TestCase):
                 alignment=AlignmentConfig(enabled=True),
                 conservation=ConservationConfig(enabled=True),
                 primer_design=PrimerDesignConfig(enabled=True),
+                panel=PanelConfig(frozen_manifest=Path("approved.json")),
                 specificity=SpecificityConfig(enabled=True),
             ).selected_input
 

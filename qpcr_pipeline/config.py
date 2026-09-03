@@ -5,6 +5,16 @@ from typing import Any, Literal
 
 import yaml
 
+from qpcr_pipeline.panel import (
+    DiagnosticContext,
+    PanelDefinition,
+    PanelNonTarget,
+    PanelTarget,
+    SequenceSelectionProvenance,
+    TargetGroup,
+    validate_panel_definition,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class QCConfig:
@@ -136,11 +146,18 @@ class NcbiInputConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PanelConfig:
+    proposal: PanelDefinition | None = None
+    frozen_manifest: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PipelineConfig:
     target_name: str
     input_fasta: Path | None = None
     input_genbank: Path | None = None
     input_ncbi: NcbiInputConfig | None = None
+    panel: PanelConfig | None = None
     qc: QCConfig = field(default_factory=QCConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     alignment: AlignmentConfig = field(default_factory=AlignmentConfig)
@@ -190,6 +207,7 @@ def load_config(path: str | Path) -> PipelineConfig:
     off_targets = _parse_off_targets(raw.get("off_targets", []))
     specificity = _parse_specificity_config(raw.get("specificity", {}))
     ranking = _parse_ranking_config(raw.get("ranking", {}))
+    panel_config = _parse_panel_config(raw.get("panel"))
 
     target_name = _required_string(target, "name", section="target")
     input_fasta = _optional_path(input_config, "fasta")
@@ -200,6 +218,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         input_fasta=input_fasta,
         input_genbank=input_genbank,
         input_ncbi=input_ncbi,
+        panel=panel_config,
         qc=QCConfig(
             min_length=_optional_integer(qc_config, "min_length"),
             max_ambiguous_fraction=_optional_number(qc_config, "max_ambiguous_fraction"),
@@ -254,6 +273,8 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Pipeline conservation must be a ConservationConfig.")
     if not isinstance(config.primer_design, PrimerDesignConfig):
         raise ValueError("Pipeline primer_design must be a PrimerDesignConfig.")
+    if config.panel is not None:
+        validate_panel_config(config.panel, target_name=config.target_name)
     if not isinstance(config.inclusivity, InclusivityConfig):
         raise ValueError("Pipeline inclusivity must be an InclusivityConfig.")
     if not isinstance(config.off_targets, tuple):
@@ -278,6 +299,10 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("Enabled conservation requires enabled alignment.")
     if config.primer_design.enabled and not config.conservation.enabled:
         raise ValueError("Enabled primer design requires enabled conservation.")
+    if config.primer_design.enabled and config.panel is None:
+        raise ValueError(
+            "Enabled primer design requires a panel proposal or frozen manifest."
+        )
     if config.inclusivity.enabled and not config.primer_design.enabled:
         raise ValueError("Enabled inclusivity requires enabled primer design.")
     if config.specificity.enabled and not config.primer_design.enabled:
@@ -683,6 +708,244 @@ def _required_string(raw: dict[str, Any], key: str, *, section: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Configuration value '{section}.{key}' must be a non-empty string.")
     return value
+
+
+def _panel_mapping(
+    raw: Any,
+    allowed: set[str],
+    label: str,
+) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Configuration {label} must be a mapping.")
+    unknown = set(raw) - allowed
+    if unknown:
+        rendered = ", ".join(sorted(str(item) for item in unknown))
+        raise ValueError(f"Configuration {label} fields {rendered} are unrecognized.")
+    missing = allowed - set(raw)
+    if missing:
+        rendered = ", ".join(sorted(missing))
+        raise ValueError(f"Configuration {label} is missing fields {rendered}.")
+    return raw
+
+
+def _panel_list(raw: Any, label: str) -> list[Any]:
+    if not isinstance(raw, list):
+        raise ValueError(f"Configuration {label} must be a list.")
+    return raw
+
+
+def _parse_sequence_selection(
+    raw: Any,
+    *,
+    label: str,
+) -> SequenceSelectionProvenance:
+    values = _panel_mapping(
+        raw,
+        {"dataset_role", "method", "source", "details"},
+        label,
+    )
+    return SequenceSelectionProvenance(
+        dataset_role=values["dataset_role"],
+        method=values["method"],
+        source=values["source"],
+        details=tuple(_panel_list(values["details"], f"{label} details")),
+    )
+
+
+def _parse_target_group(raw: Any, *, index: int) -> TargetGroup:
+    label = f"panel target group {index}"
+    values = _panel_mapping(
+        raw,
+        {
+            "name",
+            "required",
+            "dataset_roles",
+            "reasons",
+            "proposed_by",
+            "sequence_selection",
+        },
+        label,
+    )
+    selections = tuple(
+        _parse_sequence_selection(
+            item,
+            label=f"{label} sequence_selection entry {selection_index}",
+        )
+        for selection_index, item in enumerate(
+            _panel_list(
+                values["sequence_selection"],
+                f"{label} sequence_selection",
+            ),
+            1,
+        )
+    )
+    return TargetGroup(
+        name=values["name"],
+        required=values["required"],
+        dataset_roles=tuple(
+            _panel_list(values["dataset_roles"], f"{label} dataset_roles")
+        ),
+        reasons=tuple(_panel_list(values["reasons"], f"{label} reasons")),
+        proposed_by=tuple(
+            _panel_list(values["proposed_by"], f"{label} proposed_by")
+        ),
+        sequence_selection=selections,
+    )
+
+
+def _parse_panel_target(raw: Any) -> PanelTarget:
+    label = "panel target"
+    values = _panel_mapping(
+        raw,
+        {"name", "taxid", "mode", "subtype", "groups"},
+        label,
+    )
+    groups = tuple(
+        _parse_target_group(item, index=index)
+        for index, item in enumerate(
+            _panel_list(values["groups"], f"{label} groups"),
+            1,
+        )
+    )
+    return PanelTarget(
+        name=values["name"],
+        taxid=values["taxid"],
+        mode=values["mode"],
+        subtype=values["subtype"],
+        groups=groups,
+    )
+
+
+def _parse_panel_non_target(raw: Any, *, index: int) -> PanelNonTarget:
+    label = f"panel non-target {index}"
+    values = _panel_mapping(
+        raw,
+        {
+            "name",
+            "taxid",
+            "criticality",
+            "dataset_roles",
+            "reasons",
+            "proposed_by",
+            "sequence_selection",
+        },
+        label,
+    )
+    selections = tuple(
+        _parse_sequence_selection(
+            item,
+            label=f"{label} sequence_selection entry {selection_index}",
+        )
+        for selection_index, item in enumerate(
+            _panel_list(
+                values["sequence_selection"],
+                f"{label} sequence_selection",
+            ),
+            1,
+        )
+    )
+    return PanelNonTarget(
+        name=values["name"],
+        taxid=values["taxid"],
+        criticality=values["criticality"],
+        dataset_roles=tuple(
+            _panel_list(values["dataset_roles"], f"{label} dataset_roles")
+        ),
+        reasons=tuple(_panel_list(values["reasons"], f"{label} reasons")),
+        proposed_by=tuple(
+            _panel_list(values["proposed_by"], f"{label} proposed_by")
+        ),
+        sequence_selection=selections,
+    )
+
+
+def _parse_diagnostic_context(raw: Any) -> DiagnosticContext:
+    label = "panel diagnostic_context"
+    values = _panel_mapping(
+        raw,
+        {"syndrome", "geography", "sample_type", "vector"},
+        label,
+    )
+    return DiagnosticContext(
+        syndrome=values["syndrome"],
+        geography=values["geography"],
+        sample_type=values["sample_type"],
+        vector=values["vector"],
+    )
+
+
+def _parse_panel_definition(raw: Any) -> PanelDefinition:
+    label = "panel proposal"
+    values = _panel_mapping(
+        raw,
+        {"target", "non_targets", "diagnostic_context"},
+        label,
+    )
+    non_targets = tuple(
+        _parse_panel_non_target(item, index=index)
+        for index, item in enumerate(
+            _panel_list(values["non_targets"], f"{label} non_targets"),
+            1,
+        )
+    )
+    definition = PanelDefinition(
+        target=_parse_panel_target(values["target"]),
+        non_targets=non_targets,
+        diagnostic_context=_parse_diagnostic_context(
+            values["diagnostic_context"]
+        ),
+    )
+    validate_panel_definition(definition)
+    return definition
+
+
+def _parse_panel_config(raw: Any) -> PanelConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration section 'panel' must be a mapping.")
+    allowed = {"proposal", "frozen_manifest"}
+    unknown = set(raw) - allowed
+    if unknown:
+        rendered = ", ".join(sorted(str(item) for item in unknown))
+        raise ValueError(
+            f"Configuration section 'panel' fields {rendered} are unrecognized."
+        )
+    proposal = (
+        _parse_panel_definition(raw["proposal"])
+        if "proposal" in raw
+        else None
+    )
+    frozen = _optional_path(raw, "frozen_manifest")
+    config = PanelConfig(proposal=proposal, frozen_manifest=frozen)
+    if sum(value is not None for value in (proposal, frozen)) != 1:
+        raise ValueError(
+            "Panel configuration must specify exactly one proposal or frozen_manifest."
+        )
+    return config
+
+
+def validate_panel_config(config: PanelConfig, *, target_name: str) -> None:
+    if not isinstance(config, PanelConfig):
+        raise ValueError("Panel configuration must be a PanelConfig.")
+    if sum(
+        value is not None
+        for value in (config.proposal, config.frozen_manifest)
+    ) != 1:
+        raise ValueError(
+            "Panel configuration must specify exactly one proposal or frozen_manifest."
+        )
+    if config.proposal is not None:
+        validate_panel_definition(config.proposal)
+        if config.proposal.target.name.strip() != target_name.strip():
+            raise ValueError(
+                "Inline panel target name must match pipeline target_name."
+            )
+    if config.frozen_manifest is not None and not isinstance(
+        config.frozen_manifest,
+        Path,
+    ):
+        raise ValueError("Panel frozen_manifest must be a Path when configured.")
 
 
 def _parse_clustering_config(raw: Any) -> ClusteringConfig:

@@ -5,6 +5,7 @@ from pathlib import Path
 from qpcr_pipeline.config import (
     AlignmentConfig,
     ConservationConfig,
+    PanelConfig,
     PipelineConfig,
     PrimerDesignConfig,
     RankingConfig,
@@ -31,6 +32,7 @@ class RankingConfigTests(unittest.TestCase):
             "alignment:\n  enabled: true\n"
             "conservation:\n  enabled: true\n"
             "primer_design:\n  enabled: true\n"
+            "panel:\n  frozen_manifest: approved.json\n"
         )
 
     def test_defaults_are_disabled_with_stable_weights(self):
@@ -124,6 +126,7 @@ class RankingConfigTests(unittest.TestCase):
             alignment=AlignmentConfig(enabled=True),
             conservation=ConservationConfig(enabled=True),
             primer_design=PrimerDesignConfig(enabled=True),
+            panel=PanelConfig(frozen_manifest=Path("approved.json")),
             ranking=RankingConfig(enabled=True),
         )
         self.assertEqual(config.selected_input, (FIXTURE_FASTA, "fasta"))
