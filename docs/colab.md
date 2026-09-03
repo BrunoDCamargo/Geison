@@ -6,10 +6,10 @@ O notebook é deliberadamente fino: ele prepara o ambiente, escreve a configura�
 
 ## Primeira execução
 
-Abra o notebook no Colab e execute as células em ordem. Em uma sessão nova ele clona a branch ativa de desenvolvimento e instala o pacote em modo editável:
+Abra o notebook no Colab e execute as células em ordem. Em uma sessão nova ele clona a branch `main` e instala o pacote em modo editável:
 
 ```bash
-git clone --branch develop https://github.com/BrunoDCamargo/Geison.git
+git clone --branch main https://github.com/BrunoDCamargo/Geison.git
 python -m pip install -e /content/Geison
 ```
 
@@ -36,15 +36,15 @@ os.environ["NCBI_EMAIL"] = ncbi_email
 Se `/content/Geison` já existir, a célula de preparação atualiza o checkout com fast-forward e reinstala o pacote editável:
 
 ```bash
-git -C /content/Geison checkout develop
-git -C /content/Geison pull --ff-only origin develop
+git -C /content/Geison checkout main
+git -C /content/Geison pull --ff-only origin main
 python -m pip install -e /content/Geison
 ```
 
 O comando equivalente, executado de dentro do repositório, é:
 
 ```bash
-git pull --ff-only origin develop
+git pull --ff-only origin main
 ```
 
 Assim, atualizar o notebook não exige copiar lógica científica nem editar células de implementação.
