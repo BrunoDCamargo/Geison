@@ -1,26 +1,107 @@
 import json
-import unittest
 from pathlib import Path
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_NOTEBOOK_PATH = _REPO_ROOT / "notebooks" / "geison_colab.ipynb"
+ROOT = Path(__file__).parents[1]
+NOTEBOOK_PATH = ROOT / "notebooks" / "geison_colab.ipynb"
+DOC_PATH = ROOT / "docs" / "colab.md"
 
 
-class ColabNotebookBranchTests(unittest.TestCase):
-    def test_official_notebook_tracks_main_branch(self):
-        notebook = json.loads(_NOTEBOOK_PATH.read_text(encoding="utf-8"))
-        text = "".join(
-            source_line
-            for cell in notebook["cells"]
-            for source_line in cell.get("source", [])
-        )
-
-        self.assertNotIn("develop", text)
-        self.assertIn("git -C Geison checkout main", text)
-        self.assertIn("git -C Geison pull --ff-only origin main", text)
-        self.assertIn("git clone --branch main", text)
+def _load_notebook():
+    assert NOTEBOOK_PATH.is_file(), "Official Colab notebook is missing"
+    return json.loads(NOTEBOOK_PATH.read_text(encoding="utf-8"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _cell_text(notebook, cell_type):
+    return "\n".join(
+        "".join(cell.get("source", []))
+        for cell in notebook.get("cells", [])
+        if cell.get("cell_type") == cell_type
+    )
+
+
+def test_official_colab_notebook_covers_issue_13_flow():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+    markdown = _cell_text(notebook, "markdown")
+
+    assert notebook["nbformat"] == 4
+    assert "git clone" in code
+    assert "--branch main" in code
+    assert "pull --ff-only origin main" in code
+    assert "develop" not in code
+    assert "python -m pip install -e" in code
+
+    assert "apt-get" in code
+    assert "cd-hit" in code
+    assert "mafft" in code
+    assert "primer3" in code
+
+    assert "qpcr-pipeline doctor" in code
+    assert "config.yaml" in code
+    assert "qpcr-pipeline run" in code
+    assert "--outdir" in code
+    assert "--resume" in code
+    assert "report.html" in code
+
+    assert "git pull" in markdown.lower()
+    assert "develop" not in markdown.lower()
+    assert "resume" in markdown.lower()
+    assert "report.html" in markdown.lower()
+
+
+def test_colab_runs_doctor_and_analysis_from_repository_checkout():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+
+    repo_change = code.find("%cd /content/Geison")
+    doctor = code.find("qpcr-pipeline doctor")
+    run = code.find("qpcr-pipeline run")
+
+    assert repo_change >= 0
+    assert repo_change < doctor < run
+
+
+def test_colab_serves_interactive_report_through_kernel_port():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+
+    assert "http.server" in code
+    assert "serve_kernel_port_as_iframe" in code
+    assert 'path="/report.html"' in code
+    assert "display(HTML(open(report_path" not in code
+
+
+def test_colab_notebook_sets_ncbi_environment_without_exposing_scientific_logic():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+
+    assert "NCBI_EMAIL" in code
+    assert "NCBI_API_KEY" in code
+    assert "os.environ" in code
+    assert code.index("NCBI_EMAIL") < code.index("qpcr-pipeline run")
+
+
+def test_colab_notebook_delegates_scientific_work_to_geison_cli():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+
+    assert "from qpcr_pipeline" not in code
+    assert "import qpcr_pipeline" not in code
+    assert "from Bio" not in code
+    assert "import Bio" not in code
+    assert "def " not in code
+    assert "class " not in code
+
+
+def test_colab_flow_has_operational_documentation():
+    assert DOC_PATH.is_file(), "Colab operational documentation is missing"
+    text = DOC_PATH.read_text(encoding="utf-8")
+
+    assert "notebooks/geison_colab.ipynb" in text
+    assert "git pull --ff-only origin main" in text
+    assert "develop" not in text
+    assert "qpcr-pipeline doctor" in text
+    assert "NCBI_EMAIL" in text
+    assert "--resume" in text
+    assert "report.html" in text
