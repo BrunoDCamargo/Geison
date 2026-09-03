@@ -2,38 +2,18 @@
 
 O fluxo oficial do Geison para Google Colab está em [`notebooks/geison_colab.ipynb`](../notebooks/geison_colab.ipynb).
 
-O notebook é deliberadamente fino: ele prepara o ambiente, escreve a configuração YAML e chama o CLI `qpcr-pipeline`. Nenhum algoritmo científico é mantido no notebook; clustering, alinhamento, conservação, desenho de primers, inclusividade, especificidade e ranking continuam pertencendo ao pacote.
+O notebook prepara o ambiente, escreve a configuração YAML e chama o CLI `qpcr-pipeline`. A lógica científica permanece no pacote. O fluxo atual inclui o gate de painel antes da execução científica: `panel.proposal` → `ACTION_REQUIRED / PANEL_APPROVAL_REQUIRED` → revisão humana → `panel approve` → `frozen_manifest` → `--resume`.
 
 ## Primeira execução
 
-Abra o notebook no Colab e execute as células em ordem. Em uma sessão nova ele clona a branch `main` e instala o pacote em modo editável:
+Em uma sessão nova, o notebook clona a branch `main` e instala o pacote em modo editável:
 
 ```bash
 git clone --branch main https://github.com/BrunoDCamargo/Geison.git
 python -m pip install -e /content/Geison
 ```
 
-O notebook instala também CD-HIT, MAFFT e Primer3 pelo sistema e, antes da análise, executa:
-
-```bash
-qpcr-pipeline doctor
-```
-
-Use o resultado do `doctor` para confirmar as versões e a disponibilidade das dependências antes de iniciar uma run.
-
-## Identificação para aquisição NCBI
-
-Aquisição NCBI ao vivo exige a variável de ambiente `NCBI_EMAIL`. O notebook solicita esse e-mail antes da primeira execução científica e o mantém somente no ambiente da sessão:
-
-```python
-os.environ["NCBI_EMAIL"] = ncbi_email
-```
-
-`NCBI_API_KEY` é opcional. Quando informada, a chave é lida de forma oculta e também fica apenas no ambiente da sessão. E-mail e API key não são colocados no YAML, manifestos ou relatórios do Geison.
-
-## Atualizar uma sessão existente
-
-Se `/content/Geison` já existir, a célula de preparação atualiza o checkout com fast-forward e reinstala o pacote editável:
+Se `/content/Geison` já existir, ele atualiza o checkout:
 
 ```bash
 git -C /content/Geison checkout main
@@ -41,52 +21,70 @@ git -C /content/Geison pull --ff-only origin main
 python -m pip install -e /content/Geison
 ```
 
-O comando equivalente, executado de dentro do repositório, é:
+Executado de dentro do repositório, o comando equivalente de atualização é `git pull --ff-only origin main`.
+
+O notebook imprime o SHA em teste com `git rev-parse HEAD`, instala CD-HIT, MAFFT e Primer3 e executa:
 
 ```bash
-git pull --ff-only origin main
+qpcr-pipeline doctor
 ```
 
-Assim, atualizar o notebook não exige copiar lógica científica nem editar células de implementação.
+## Identificação para aquisição NCBI
 
-## Configuração e execução
+Aquisição NCBI ao vivo exige `NCBI_EMAIL`. `NCBI_API_KEY` é opcional. O notebook mantém os dois valores somente no ambiente da sessão; não os grava no YAML, manifestos ou relatórios.
 
-A análise é controlada por um arquivo `config.yaml`. O notebook inclui um exemplo NCBI pequeno que pode ser substituído pela configuração do projeto.
+## Gate de painel
 
-Valide primeiro sem executar etapas científicas:
+A primeira configuração contém `panel.proposal`. O `--dry-run` deve anunciar que a aprovação é necessária sem criar o diretório de saída:
 
 ```bash
 qpcr-pipeline run /content/geison_run/config.yaml --dry-run --outdir /content/geison_run/output
 ```
 
-Depois execute a run:
+A primeira execução real para com código de processo `3`, status `ACTION_REQUIRED` e código `PANEL_APPROVAL_REQUIRED`. Ela grava `/content/geison_run/output/panel_proposal.yaml` e não deve criar o checkpoint de `input`.
+
+O notebook exibe o `panel_proposal.yaml` para revisão. A aprovação exige uma confirmação humana explícita (`APROVAR`) antes de executar:
 
 ```bash
-qpcr-pipeline run /content/geison_run/config.yaml --outdir /content/geison_run/output
+qpcr-pipeline panel approve \
+  /content/geison_run/output/panel_proposal.yaml \
+  --output /content/geison_run/approved_panel.json
 ```
 
-O diretório de saída contém o `run_manifest.json`, o log estruturado, checkpoints e os artefatos científicos habilitados pela configuração.
+O manifesto aprovado deve conter `status: APPROVED`, `approved_by_user: true` e `proposal_sha256` com prefixo `sha256:`.
 
-## Retomar uma run
+Depois da aprovação, a configuração passa a usar:
 
-Para reutilizar checkpoints válidos após interrupção ou reinício da sessão, restaure o mesmo diretório de saída e execute:
+```yaml
+panel:
+  frozen_manifest: /content/geison_run/approved_panel.json
+```
+
+A mesma run é retomada no mesmo diretório:
 
 ```bash
-qpcr-pipeline run /content/geison_run/config.yaml --outdir /content/geison_run/output --resume
+qpcr-pipeline run /content/geison_run/config-approved.yaml \
+  --outdir /content/geison_run/output \
+  --resume
 ```
 
-O `--resume` mantém a identidade da run, registra uma nova tentativa e recalcula apenas etapas cujos checkpoints não sejam reutilizáveis.
+Após o `--resume`, o notebook confirma:
 
-## `report.html`
+- `panel/approved_panel.json`;
+- `.checkpoints/panel/manifest.json`;
+- `.checkpoints/input/manifest.json`;
+- `run_manifest.json` com `panel_provenance`.
 
-Quando a configuração habilita uma etapa que publica o relatório, o arquivo fica em:
+## Relatório
+
+Quando a configuração publica o relatório, ele fica em:
 
 ```text
 /content/geison_run/output/report.html
 ```
 
-A última célula do notebook lê esse `report.html` e o exibe diretamente no Colab. O mesmo arquivo pode ser baixado ou copiado para o Google Drive.
+A última célula serve esse `report.html` por uma porta local e o abre em um iframe do Colab.
 
 ## Persistência no Colab
 
-O armazenamento em `/content` é temporário. Para uma run longa ou para retomar em outra sessão, preserve `config.yaml` e o diretório completo de saída fora do runtime temporário, por exemplo no Google Drive. Copiar somente arquivos finais não preserva necessariamente os checkpoints necessários ao `--resume`.
+O armazenamento em `/content` é temporário. Para retomar em outra sessão, preserve `config-approved.yaml`, `approved_panel.json` e o diretório completo `/content/geison_run/output`. Copiar apenas os arquivos finais não preserva os checkpoints exigidos por `--resume`.
