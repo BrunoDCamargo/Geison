@@ -1,0 +1,48 @@
+schema_version: 1
+status: PROPOSED
+definition:
+  target:
+    name: West Nile virus
+    taxid: null
+    mode: broad_detection
+    subtype: null
+    groups:
+      - name: lineage_1
+        required: true
+        dataset_roles: [DESIGN, CHALLENGE]
+        reasons: [target_diversity]
+        proposed_by: [manual]
+        sequence_selection: []
+      - name: lineage_2
+        required: true
+        dataset_roles: [DESIGN, CHALLENGE]
+        reasons: [target_diversity]
+        proposed_by: [manual]
+        sequence_selection: []
+  non_targets:
+    - name: Usutu virus
+      taxid: null
+      criticality: CRITICAL
+      dataset_roles: [DESIGN, CHALLENGE]
+      reasons: [phylogenetic_neighbor]
+      proposed_by: [manual]
+      sequence_selection: []
+    - name: Japanese encephalitis virus
+      taxid: null
+      criticality: CRITICAL
+      dataset_roles: [DESIGN, CHALLENGE]
+      reasons: [phylogenetic_neighbor]
+      proposed_by: [manual]
+      sequence_selection: []
+    - name: Dengue virus
+      taxid: null
+      criticality: IMPORTANT
+      dataset_roles: [CHALLENGE]
+      reasons: [clinical_differential]
+      proposed_by: [manual]
+      sequence_selection: []
+  diagnostic_context:
+    syndrome: arboviral febrile disease
+    geography: Brazil
+    sample_type: human serum
+    vector: mosquito
