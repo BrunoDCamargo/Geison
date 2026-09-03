@@ -60,6 +60,16 @@ def test_colab_runs_doctor_and_analysis_from_repository_checkout():
     assert repo_change < doctor < run
 
 
+def test_colab_serves_interactive_report_through_kernel_port():
+    notebook = _load_notebook()
+    code = _cell_text(notebook, "code")
+
+    assert "http.server" in code
+    assert "serve_kernel_port_as_iframe" in code
+    assert 'path="/report.html"' in code
+    assert "display(HTML(open(report_path" not in code
+
+
 def test_colab_notebook_sets_ncbi_environment_without_exposing_scientific_logic():
     notebook = _load_notebook()
     code = _cell_text(notebook, "code")
