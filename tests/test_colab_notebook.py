@@ -27,8 +27,9 @@ def test_official_colab_notebook_covers_issue_13_flow():
 
     assert notebook["nbformat"] == 4
     assert "git clone" in code
-    assert "--branch develop" in code
-    assert "pull --ff-only origin develop" in code
+    assert "--branch main" in code
+    assert "pull --ff-only origin main" in code
+    assert "develop" not in code
     assert "python -m pip install -e" in code
 
     assert "apt-get" in code
@@ -44,6 +45,7 @@ def test_official_colab_notebook_covers_issue_13_flow():
     assert "report.html" in code
 
     assert "git pull" in markdown.lower()
+    assert "develop" not in markdown.lower()
     assert "resume" in markdown.lower()
     assert "report.html" in markdown.lower()
 
@@ -97,7 +99,8 @@ def test_colab_flow_has_operational_documentation():
     text = DOC_PATH.read_text(encoding="utf-8")
 
     assert "notebooks/geison_colab.ipynb" in text
-    assert "git pull --ff-only origin develop" in text
+    assert "git pull --ff-only origin main" in text
+    assert "develop" not in text
     assert "qpcr-pipeline doctor" in text
     assert "NCBI_EMAIL" in text
     assert "--resume" in text
