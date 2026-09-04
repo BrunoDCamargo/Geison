@@ -15,6 +15,7 @@ from Bio.SeqFeature import CompoundLocation, SeqFeature, SimpleLocation
 from qpcr_pipeline.alignment import AlignmentResult
 from qpcr_pipeline.clustering import ClusteringResult
 from qpcr_pipeline.conservation import ConservationResult
+from qpcr_pipeline.contrastive_conservation import ContrastiveConservationResult
 from qpcr_pipeline.inclusivity import InclusivityResult
 from qpcr_pipeline.local_input import LocalSequenceRecord
 from qpcr_pipeline.panel_manifest import PanelResult
@@ -330,6 +331,9 @@ QC_CODEC = _StructuralCodec[QCResult](QCResult)
 CLUSTERING_CODEC = _StructuralCodec[ClusteringResult](ClusteringResult)
 ALIGNMENT_CODEC = _StructuralCodec[AlignmentResult](AlignmentResult)
 CONSERVATION_CODEC = _StructuralCodec[ConservationResult](ConservationResult)
+CONTRASTIVE_CONSERVATION_CODEC = _StructuralCodec[ContrastiveConservationResult](
+    ContrastiveConservationResult
+)
 PRIMER_DESIGN_CODEC = _StructuralCodec[PrimerDesignResult](PrimerDesignResult)
 INCLUSIVITY_CODEC = _StructuralCodec[InclusivityResult](InclusivityResult)
 SPECIFICITY_CODEC = _StructuralCodec[SpecificityResult](SpecificityResult)

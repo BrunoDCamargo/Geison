@@ -14,6 +14,7 @@ from qpcr_pipeline.checkpoint_codecs import (
     ALIGNMENT_CODEC,
     CLUSTERING_CODEC,
     CONSERVATION_CODEC,
+    CONTRASTIVE_CONSERVATION_CODEC,
     INCLUSIVITY_CODEC,
     INPUT_CODEC,
     PANEL_CODEC,
@@ -52,6 +53,7 @@ _CODECS = {
     "clustering": CLUSTERING_CODEC,
     "alignment": ALIGNMENT_CODEC,
     "conservation": CONSERVATION_CODEC,
+    "contrastive_conservation": CONTRASTIVE_CONSERVATION_CODEC,
     "primer_design": PRIMER_DESIGN_CODEC,
     "inclusivity": INCLUSIVITY_CODEC,
     "specificity": SPECIFICITY_CODEC,
@@ -340,6 +342,14 @@ def stage_outputs(stage: str, result: object, outdir: Path) -> tuple[Path, ...]:
             getattr(result, "major_consensus_path", None),
             getattr(result, "iupac_consensus_path", None),
             getattr(result, "report_path", None),
+        )
+    elif stage == "contrastive_conservation":
+        values = _paths(
+            getattr(result, "window_metrics_path", None),
+            getattr(result, "dataset_metrics_path", None),
+            getattr(result, "candidate_regions_path", None),
+            getattr(result, "report_path", None),
+            getattr(result, "html_report_path", None),
         )
     elif stage == "primer_design":
         values = _paths(
