@@ -21,6 +21,8 @@ SHARED_START = 201
 SHARED_END = 300
 DISCRIMINANT_START = 601
 DISCRIMINANT_END = 700
+CONSOLIDATED_START = 61
+CONSOLIDATED_END = 160
 
 TARGET_NAME = "West Nile-like synthetic target"
 CHALLENGES = (
@@ -66,9 +68,9 @@ def _unique_reference() -> str:
 
 
 def _protected_target_position(index: int) -> bool:
-    # Keep a broad stable neighborhood around both demonstration windows so
-    # target-side candidate expansion remains stable in the full workflow.
-    return 150 <= index < 350 or 500 <= index < 800
+    # Preserve target-side stability around both discriminant zones and the
+    # shared-conserved zone used by the demonstration.
+    return 0 <= index < 350 or 500 <= index < 800
 
 
 def _target_variant(reference: str, variant_index: int) -> str:
@@ -88,16 +90,23 @@ def _challenge_sequence(reference: str, challenge_index: int) -> str:
     sequence = list(reference)
     offset = _MUTATION_OFFSETS[challenge_index]
 
-    # The intended discriminant interval is altered base-by-base. Because the
-    # 1,200-base reference has unique 100-base windows, the production local
-    # similarity engine cannot recover an identical copy elsewhere.
-    for index in range(DISCRIMINANT_START - 1, DISCRIMINANT_END):
-        sequence[index] = _mutated_base(sequence[index], offset)
+    # Two deterministic discriminant zones are altered base-by-base. The
+    # central zone supports the focused real-engine regression. The near-start
+    # zone makes several 100-base windows expand to the same 1-300 candidate
+    # interval, exercising deterministic candidate consolidation end-to-end.
+    for start, end in (
+        (DISCRIMINANT_START, DISCRIMINANT_END),
+        (CONSOLIDATED_START, CONSOLIDATED_END),
+    ):
+        for index in range(start - 1, end):
+            sequence[index] = _mutated_base(sequence[index], offset)
 
     # Add deterministic background diversity without changing the shared
-    # conserved demonstration interval.
-    excluded = set(range(SHARED_START - 1, SHARED_END)) | set(
-        range(DISCRIMINANT_START - 1, DISCRIMINANT_END)
+    # conserved demonstration interval or either deliberate discriminant zone.
+    excluded = (
+        set(range(SHARED_START - 1, SHARED_END))
+        | set(range(DISCRIMINANT_START - 1, DISCRIMINANT_END))
+        | set(range(CONSOLIDATED_START - 1, CONSOLIDATED_END))
     )
     allowed = [index for index in range(len(sequence)) if index not in excluded]
     rng = random.Random(SEED + 1000 + challenge_index)
