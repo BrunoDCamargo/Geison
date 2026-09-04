@@ -77,7 +77,7 @@ def _approved_panel_with_usutu(directory: Path, criticality: str) -> PanelConfig
     return PanelConfig(frozen_manifest=approved_path)
 
 
-def test_changed_approved_panel_invalidates_every_downstream_stage(tmp_path):
+def test_changed_approved_panel_reuses_target_chain_and_invalidates_contrastive_descendants(tmp_path):
     fasta = tmp_path / "target.fasta"
     outdir = tmp_path / "run"
     _write_fasta(fasta)
@@ -98,9 +98,19 @@ def test_changed_approved_panel_invalidates_every_downstream_stage(tmp_path):
 
     changed = replace(first, panel=second_panel)
     run_pipeline(changed, outdir, execution=ExecutionPolicy(resume=True))
-    actions = _actions(outdir)
-    assert actions["panel"] == "RUN"
-    assert all(actions[stage] == "FORCED" for stage in STAGE_ORDER[1:])
+    assert _actions(outdir) == {
+        "panel": "RUN",
+        "input": "REUSE",
+        "qc": "REUSE",
+        "clustering": "REUSE",
+        "alignment": "REUSE",
+        "conservation": "REUSE",
+        "contrastive_conservation": "FORCED",
+        "primer_design": "FORCED",
+        "inclusivity": "FORCED",
+        "specificity": "FORCED",
+        "ranking": "FORCED",
+    }
 
 
 def test_normal_run_writes_all_stage_checkpoints_and_does_not_reuse(tmp_path):
@@ -155,6 +165,7 @@ def test_specificity_parameter_change_does_not_recalculate_alignment_or_conserva
         "clustering": "REUSE",
         "alignment": "REUSE",
         "conservation": "REUSE",
+        "contrastive_conservation": "REUSE",
         "primer_design": "REUSE",
         "inclusivity": "REUSE",
         "specificity": "RUN",
@@ -175,6 +186,7 @@ def test_clustering_parameter_change_invalidates_complete_dependent_chain(tmp_pa
         "clustering": "RUN",
         "alignment": "FORCED",
         "conservation": "FORCED",
+        "contrastive_conservation": "FORCED",
         "primer_design": "FORCED",
         "inclusivity": "FORCED",
         "specificity": "FORCED",
@@ -198,6 +210,7 @@ def test_force_inclusivity_keeps_independent_specificity_reusable(tmp_path):
         "clustering": "REUSE",
         "alignment": "REUSE",
         "conservation": "REUSE",
+        "contrastive_conservation": "REUSE",
         "primer_design": "REUSE",
         "inclusivity": "FORCED",
         "specificity": "REUSE",
@@ -221,6 +234,7 @@ def test_valid_from_specificity_reuses_boundary_and_forces_selected_subgraph(tmp
         "clustering": "REUSE",
         "alignment": "REUSE",
         "conservation": "REUSE",
+        "contrastive_conservation": "REUSE",
         "primer_design": "REUSE",
         "inclusivity": "REUSE",
         "specificity": "FORCED",
@@ -264,6 +278,7 @@ def test_corrupt_alignment_output_reruns_alignment_and_descendants_only(tmp_path
         "clustering": "REUSE",
         "alignment": "RUN",
         "conservation": "FORCED",
+        "contrastive_conservation": "FORCED",
         "primer_design": "FORCED",
         "inclusivity": "FORCED",
         "specificity": "FORCED",
@@ -298,6 +313,7 @@ def test_interrupted_run_preserves_completed_upstream_and_resume_finishes(tmp_pa
         "clustering": "REUSE",
         "alignment": "REUSE",
         "conservation": "REUSE",
+        "contrastive_conservation": "REUSE",
         "primer_design": "REUSE",
         "inclusivity": "REUSE",
         "specificity": "RUN",
@@ -367,6 +383,7 @@ def test_mafft_version_change_invalidates_alignment_and_descendants_only(tmp_pat
         "clustering": "REUSE",
         "alignment": "RUN",
         "conservation": "FORCED",
+        "contrastive_conservation": "FORCED",
         "primer_design": "FORCED",
         "inclusivity": "FORCED",
         "specificity": "FORCED",
