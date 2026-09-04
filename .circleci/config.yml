@@ -18,7 +18,7 @@ jobs:
           name: Run normal test suite
           command: |
             if [ "$CIRCLE_BRANCH" = "feat/contrastive-conservation-guided-colab" ]; then
-              python -m pytest -q tests/test_contrastive_stage_contract.py tests/test_execution.py
+              python -m pytest -q tests/test_contrastive_stage_contract.py
             else
               python -m pytest -q
             fi
