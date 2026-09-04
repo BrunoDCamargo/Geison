@@ -323,16 +323,18 @@ def test_interrupted_run_preserves_completed_upstream_and_resume_finishes(tmp_pa
     assert _manifest(outdir, "ranking")["status"] == "COMPLETE"
 
 
-def test_geison_version_change_invalidates_entire_chain(tmp_path):
+def test_geison_version_change_invalidates_independent_roots_and_forces_descendants(tmp_path):
     config, outdir = _default_run(tmp_path)
 
     with patch("qpcr_pipeline.checkpoint_stages.geison_version", return_value="999.0.0"):
         run_pipeline(config, outdir, execution=ExecutionPolicy(resume=True))
 
-    assert _actions(outdir)["panel"] == "RUN"
+    actions = _actions(outdir)
+    assert actions["panel"] == "RUN"
+    assert actions["input"] == "RUN"
     assert all(
-        _actions(outdir)[stage] == "FORCED"
-        for stage in STAGE_ORDER[1:]
+        actions[stage] == "FORCED"
+        for stage in STAGE_ORDER[2:]
     )
 
 
