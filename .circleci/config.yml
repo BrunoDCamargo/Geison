@@ -1,64 +1,60 @@
 version: 2.1
-executors:
-  python:
+
+jobs:
+  test:
     docker:
       - image: cimg/python:3.12
     resource_class: small
-commands:
-  install_project:
     steps:
+      - checkout
+
       - run:
-          name: Install Python project
+          name: Install Python project and test runner
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
-  install_tools:
-    steps:
+
       - run:
-          name: Install integration tools
+          name: Run full unit and regression suite
+          command: python -m pytest -q
+
+      - run:
+          name: Smoke test installed CLI
           command: |
-            sudo apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cd-hit mafft primer3
-jobs:
-  guided_gate:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - run:
-          command: python -m unittest integration_tests.test_guided_contrastive_diagnostics.GuidedContrastiveDiagnostics.test_gate_and_approval -q
-  guided_resume:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - install_tools
-      - run:
-          command: python -m unittest integration_tests.test_guided_contrastive_diagnostics.GuidedContrastiveDiagnostics.test_resume_reaches_completed -q
-  guided_report:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - install_tools
-      - run:
-          command: python -m unittest integration_tests.test_guided_contrastive_diagnostics.GuidedContrastiveDiagnostics.test_contrast_report_is_published -q
-  guided_contributors:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - install_tools
-      - run:
-          command: python -m unittest integration_tests.test_guided_contrastive_diagnostics.GuidedContrastiveDiagnostics.test_candidate_retains_multiple_contributing_windows -q
+            qpcr-pipeline doctor
+            qpcr-pipeline panel approve --help
+            qpcr-pipeline panel approve tests/fixtures/panels/west_nile_proposal.yaml --output approved-panel-smoke.json
+            python -c "import json; p=json.load(open('approved-panel-smoke.json', encoding='utf-8')); assert p['status']=='APPROVED'; assert p['approved_by_user'] is True; assert p['proposal_sha256'].startswith('sha256:')"
+            rm approved-panel-smoke.json
+
+      - when:
+          condition:
+            or:
+              - equal: [main, << pipeline.git.branch >>]
+              - equal: [feat/contrastive-conservation-guided-colab, << pipeline.git.branch >>]
+          steps:
+            - run:
+                name: Install integration tools
+                command: |
+                  sudo apt-get update
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                    cd-hit \
+                    mafft \
+                    primer3
+
+            - run:
+                name: Verify integration tools
+                command: |
+                  command -v cd-hit-est
+                  command -v mafft
+                  command -v primer3_core
+
+            - run:
+                name: Run full integration suite
+                command: python -m unittest discover -s integration_tests -q
+
 workflows:
   ci:
     jobs:
-      - guided_gate:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - guided_resume:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - guided_report:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - guided_contributors:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - test:
+          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main" or pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
