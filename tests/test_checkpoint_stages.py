@@ -56,7 +56,7 @@ def _config(fasta: Path, **changes):
 def test_registry_contains_every_pipeline_stage():
     assert tuple(STAGE_DEFINITIONS) == (
         "panel", "input", "qc", "clustering", "alignment", "conservation",
-        "primer_design", "inclusivity", "specificity", "ranking",
+        "contrastive_conservation", "primer_design", "inclusivity", "specificity", "ranking",
     )
 
 
@@ -98,7 +98,10 @@ def test_specificity_parameter_change_is_isolated_to_specificity(tmp_path):
     fasta.write_text(">s1\nACGT\n", encoding="utf-8")
     first = _config(fasta)
     second = replace(first, specificity=SpecificityConfig(max_hits_per_oligo_per_dataset=7))
-    unaffected = ("input", "qc", "clustering", "alignment", "conservation", "primer_design", "inclusivity")
+    unaffected = (
+        "input", "qc", "clustering", "alignment", "conservation",
+        "contrastive_conservation", "primer_design", "inclusivity",
+    )
     for stage in unaffected:
         assert stage_parameters(stage, first) == stage_parameters(stage, second)
     assert stage_parameters("specificity", first) != stage_parameters("specificity", second)
@@ -110,7 +113,10 @@ def test_clustering_parameter_change_changes_only_clustering_projection_directly
     first = _config(fasta)
     second = replace(first, clustering=ClusteringConfig(identity=0.90))
     assert stage_parameters("clustering", first) != stage_parameters("clustering", second)
-    for stage in ("qc", "alignment", "conservation", "primer_design", "inclusivity", "specificity", "ranking"):
+    for stage in (
+        "qc", "alignment", "conservation", "contrastive_conservation",
+        "primer_design", "inclusivity", "specificity", "ranking",
+    ):
         assert stage_parameters(stage, first) == stage_parameters(stage, second)
 
 
@@ -120,7 +126,10 @@ def test_ranking_weights_change_only_ranking_projection(tmp_path):
     first = _config(fasta)
     second = replace(first, ranking=RankingConfig(weights=RankingWeights(inclusivity=0.30, specificity=0.30, conservation=0.20, primer3_quality=0.10, robustness=0.10)))
     assert stage_parameters("ranking", first) != stage_parameters("ranking", second)
-    for stage in ("input", "qc", "clustering", "alignment", "conservation", "primer_design", "inclusivity", "specificity"):
+    for stage in (
+        "input", "qc", "clustering", "alignment", "conservation",
+        "contrastive_conservation", "primer_design", "inclusivity", "specificity",
+    ):
         assert stage_parameters(stage, first) == stage_parameters(stage, second)
 
 
