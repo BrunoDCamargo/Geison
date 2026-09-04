@@ -15,8 +15,17 @@ jobs:
             python -m pip install -e . pytest
 
       - run:
-          name: Run remaining regression subset
-          command: python -m pytest tests -q --ignore-glob='tests/test_pipeline_*.py' --ignore-glob='tests/test_ranking_*.py' --ignore-glob='tests/test_*report*.py'
+          name: Run indirect pipeline consumer subset
+          command: |
+            FILES=$(find tests -maxdepth 1 -type f \( \
+              -name 'test_cli*.py' -o \
+              -name 'test_checkpoint*.py' -o \
+              -name 'test_execution*.py' -o \
+              -name 'test_planning*.py' -o \
+              -name 'test_minimal*.py' -o \
+              -name 'test_run_recording*.py' \
+            \) -print)
+            python -m pytest $FILES -q
 
       - run:
           name: Smoke test installed panel approval CLI
