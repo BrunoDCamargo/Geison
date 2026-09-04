@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -24,6 +25,9 @@ class ResearcherReportData:
     inclusivity: dict[str, object] | None
     specificity: dict[str, object] | None
     ranking: dict[str, object] | None
+    conservation_windows: tuple[dict[str, object], ...] = ()
+    specificity_hits: tuple[dict[str, object], ...] = ()
+    specificity_amplicons: tuple[dict[str, object], ...] = ()
 
 
 def _load_json_object(
@@ -53,6 +57,55 @@ def _load_json_object(
     return payload
 
 
+def _coerce_tsv_scalar(value: str | None) -> object:
+    if value is None or value == "":
+        return None
+    lowered = value.casefold()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def _load_tsv_rows(
+    output_dir: Path,
+    relative_path: str,
+) -> tuple[dict[str, object], ...]:
+    path = output_dir / relative_path
+    if not path.is_file():
+        return ()
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if reader.fieldnames is None:
+                raise ResearcherReportError(
+                    f"Researcher report TSV artifact has no header: {relative_path}"
+                )
+            return tuple(
+                {
+                    str(key): _coerce_tsv_scalar(value)
+                    for key, value in row.items()
+                    if key is not None
+                }
+                for row in reader
+            )
+    except ResearcherReportError:
+        raise
+    except (OSError, UnicodeError, csv.Error) as error:
+        raise ResearcherReportError(
+            f"Could not read researcher report artifact {relative_path}: "
+            f"{type(error).__name__}: {error}"
+        ) from error
+
+
 def load_researcher_report_data(output_dir: Path) -> ResearcherReportData:
     """Load only published Geison artifacts used by the final report."""
     root = Path(output_dir)
@@ -76,6 +129,18 @@ def load_researcher_report_data(output_dir: Path) -> ResearcherReportData:
         inclusivity=_load_json_object(root, "inclusivity/inclusivity_report.json"),
         specificity=_load_json_object(root, "specificity/specificity_report.json"),
         ranking=_load_json_object(root, "ranking/ranking_report.json"),
+        conservation_windows=_load_tsv_rows(
+            root,
+            "conservation/window_metrics.tsv",
+        ),
+        specificity_hits=_load_tsv_rows(
+            root,
+            "specificity/off_target_hits.tsv",
+        ),
+        specificity_amplicons=_load_tsv_rows(
+            root,
+            "specificity/plausible_amplicons.tsv",
+        ),
     )
 
 
