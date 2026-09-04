@@ -16,64 +16,124 @@ commands:
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
 
+  legacy_files_af:
+    steps:
+      - run:
+          name: Run legacy tests A-F
+          command: |
+            FILES=$(python - <<'PY'
+            from pathlib import Path
+            excluded = {
+                'test_challenge_panel.py', 'test_contrastive_similarity.py',
+                'test_contrastive_conservation.py', 'test_contrastive_report_html.py',
+                'test_contrastive_stage_contract.py', 'test_primer_contrastive_source.py',
+                'test_region_selection.py', 'test_contrastive_checkpoint_contract.py',
+                'test_contrastive_checkpoint_integration.py', 'test_execution.py',
+                'test_guided_demo.py', 'test_guided_colab_notebook.py',
+            }
+            files = [p for p in sorted(Path('tests').glob('test_*.py')) if p.name not in excluded and 'a' <= p.name[5].lower() <= 'f']
+            print(' '.join(map(str, files)))
+            PY
+            )
+            echo "$FILES"
+            python -m pytest -q $FILES
+
+  legacy_files_gl:
+    steps:
+      - run:
+          name: Run legacy tests G-L
+          command: |
+            FILES=$(python - <<'PY'
+            from pathlib import Path
+            excluded = {
+                'test_challenge_panel.py', 'test_contrastive_similarity.py',
+                'test_contrastive_conservation.py', 'test_contrastive_report_html.py',
+                'test_contrastive_stage_contract.py', 'test_primer_contrastive_source.py',
+                'test_region_selection.py', 'test_contrastive_checkpoint_contract.py',
+                'test_contrastive_checkpoint_integration.py', 'test_execution.py',
+                'test_guided_demo.py', 'test_guided_colab_notebook.py',
+            }
+            files = [p for p in sorted(Path('tests').glob('test_*.py')) if p.name not in excluded and 'g' <= p.name[5].lower() <= 'l']
+            print(' '.join(map(str, files)))
+            PY
+            )
+            echo "$FILES"
+            python -m pytest -q $FILES
+
+  legacy_files_mr:
+    steps:
+      - run:
+          name: Run legacy tests M-R
+          command: |
+            FILES=$(python - <<'PY'
+            from pathlib import Path
+            excluded = {
+                'test_challenge_panel.py', 'test_contrastive_similarity.py',
+                'test_contrastive_conservation.py', 'test_contrastive_report_html.py',
+                'test_contrastive_stage_contract.py', 'test_primer_contrastive_source.py',
+                'test_region_selection.py', 'test_contrastive_checkpoint_contract.py',
+                'test_contrastive_checkpoint_integration.py', 'test_execution.py',
+                'test_guided_demo.py', 'test_guided_colab_notebook.py',
+            }
+            files = [p for p in sorted(Path('tests').glob('test_*.py')) if p.name not in excluded and 'm' <= p.name[5].lower() <= 'r']
+            print(' '.join(map(str, files)))
+            PY
+            )
+            echo "$FILES"
+            python -m pytest -q $FILES
+
+  legacy_files_sz:
+    steps:
+      - run:
+          name: Run legacy tests S-Z
+          command: |
+            FILES=$(python - <<'PY'
+            from pathlib import Path
+            excluded = {
+                'test_challenge_panel.py', 'test_contrastive_similarity.py',
+                'test_contrastive_conservation.py', 'test_contrastive_report_html.py',
+                'test_contrastive_stage_contract.py', 'test_primer_contrastive_source.py',
+                'test_region_selection.py', 'test_contrastive_checkpoint_contract.py',
+                'test_contrastive_checkpoint_integration.py', 'test_execution.py',
+                'test_guided_demo.py', 'test_guided_colab_notebook.py',
+            }
+            files = [p for p in sorted(Path('tests').glob('test_*.py')) if p.name not in excluded and 's' <= p.name[5].lower() <= 'z']
+            print(' '.join(map(str, files)))
+            PY
+            )
+            echo "$FILES"
+            python -m pytest -q $FILES
+
 jobs:
-  feature_core:
+  legacy_af:
     executor: python
     steps:
       - install_project
-      - run:
-          name: Run contrastive scientific unit tests
-          command: |
-            python -m pytest -q \
-              tests/test_challenge_panel.py \
-              tests/test_contrastive_similarity.py \
-              tests/test_contrastive_conservation.py \
-              tests/test_contrastive_report_html.py \
-              tests/test_contrastive_stage_contract.py \
-              tests/test_primer_contrastive_source.py \
-              tests/test_region_selection.py
-
-  feature_checkpoint_guided:
+      - legacy_files_af
+  legacy_gl:
     executor: python
     steps:
       - install_project
-      - run:
-          name: Run checkpoint and guided workflow unit tests
-          command: |
-            python -m pytest -q \
-              tests/test_contrastive_checkpoint_contract.py \
-              tests/test_contrastive_checkpoint_integration.py \
-              tests/test_execution.py \
-              tests/test_guided_demo.py \
-              tests/test_guided_colab_notebook.py
-
-  legacy_regression:
+      - legacy_files_gl
+  legacy_mr:
     executor: python
     steps:
       - install_project
-      - run:
-          name: Run legacy regression tests
-          command: |
-            python -m pytest -q tests \
-              --ignore=tests/test_challenge_panel.py \
-              --ignore=tests/test_contrastive_similarity.py \
-              --ignore=tests/test_contrastive_conservation.py \
-              --ignore=tests/test_contrastive_report_html.py \
-              --ignore=tests/test_contrastive_stage_contract.py \
-              --ignore=tests/test_primer_contrastive_source.py \
-              --ignore=tests/test_region_selection.py \
-              --ignore=tests/test_contrastive_checkpoint_contract.py \
-              --ignore=tests/test_contrastive_checkpoint_integration.py \
-              --ignore=tests/test_execution.py \
-              --ignore=tests/test_guided_demo.py \
-              --ignore=tests/test_guided_colab_notebook.py
+      - legacy_files_mr
+  legacy_sz:
+    executor: python
+    steps:
+      - install_project
+      - legacy_files_sz
 
 workflows:
   ci:
     jobs:
-      - feature_core:
+      - legacy_af:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - feature_checkpoint_guided:
+      - legacy_gl:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_regression:
+      - legacy_mr:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - legacy_sz:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
