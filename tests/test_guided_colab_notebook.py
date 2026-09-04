@@ -38,6 +38,7 @@ def test_guided_notebook_has_researcher_facing_sections_and_cli_flow():
         "Specificity",
         "Final candidates",
         "Reproducibility",
+        "11. Researcher report",
     ]
     for marker in required_markdown:
         assert marker in markdown
@@ -59,8 +60,18 @@ def test_guided_notebook_has_researcher_facing_sections_and_cli_flow():
 def test_guided_notebook_does_not_duplicate_scientific_implementation():
     _, _, code = _notebook_text()
     for forbidden in [
-        "from qpcr_pipeline",
-        "import qpcr_pipeline",
+        "from qpcr_pipeline.conservation",
+        "from qpcr_pipeline.contrastive_conservation",
+        "from qpcr_pipeline.primer_design",
+        "from qpcr_pipeline.inclusivity",
+        "from qpcr_pipeline.specificity",
+        "from qpcr_pipeline.ranking",
+        "import qpcr_pipeline.conservation",
+        "import qpcr_pipeline.contrastive_conservation",
+        "import qpcr_pipeline.primer_design",
+        "import qpcr_pipeline.inclusivity",
+        "import qpcr_pipeline.specificity",
+        "import qpcr_pipeline.ranking",
         "from Bio",
         "import Bio",
         "PairwiseAligner",
@@ -70,6 +81,10 @@ def test_guided_notebook_does_not_duplicate_scientific_implementation():
         "analyze_contrastive_conservation(",
     ]:
         assert forbidden not in code
+
+    assert (
+        "from qpcr_pipeline.evidence_bundle import create_evidence_bundle" in code
+    )
 
 
 def test_guided_notebook_exposes_states_configs_and_published_artifacts():
@@ -98,6 +113,27 @@ def test_guided_notebook_keeps_explicit_human_approval_gate():
     assert "approved_panel.json" in combined
 
 
+def test_guided_notebook_exposes_researcher_report_and_evidence_downloads():
+    _, markdown, code = _notebook_text()
+    combined = markdown + "\n" + code
+
+    for marker in [
+        "Researcher report",
+        "View report",
+        "Download report.html",
+        "Download evidence bundle.zip",
+        "report.html",
+        "evidence_bundle.zip",
+        "create_evidence_bundle",
+        "files.download",
+    ]:
+        assert marker in combined
+
+    assert "google.colab import files" in code
+    assert "approved_config" in code
+    assert "approved_panel_path" in code
+
+
 def test_guided_colab_guide_documents_normal_and_advanced_use():
     text = GUIDE.read_text(encoding="utf-8")
     for marker in [
@@ -110,5 +146,8 @@ def test_guided_colab_guide_documents_normal_and_advanced_use():
         "run_manifest.json",
         "synthetic",
         "experimental",
+        "Researcher report",
+        "report.html",
+        "evidence bundle",
     ]:
         assert marker in text
