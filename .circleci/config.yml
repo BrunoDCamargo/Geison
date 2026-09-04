@@ -11,72 +11,60 @@ commands:
             python -m pip install -e . pytest
 
 jobs:
-  legacy_panel:
+  legacy_checkpoint:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run panel tests
-          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_panel*.py' | sort)
+          name: Run checkpoint tests
+          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_checkpoint*.py' | sort)
 
-  legacy_pipeline:
+  legacy_cli_colab:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run pipeline tests
-          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_pipeline*.py' | sort)
-
-  legacy_planning_provenance:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run planning and provenance tests
+          name: Run CLI and low-level Colab tests
           command: |
-            FILES=$(find tests -maxdepth 1 -type f \( -name 'test_planning*.py' -o -name 'test_provenance*.py' \) | sort | tr '\n' ' ')
-            echo "$FILES"
-            if [ -n "$FILES" ]; then python -m pytest -q $FILES; fi
-
-  legacy_primer:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run primer tests
-          command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_primer*.py' | grep -Ev 'test_primer_contrastive_source\.py$' | sort | tr '\n' ' ')
+            FILES=$(find tests -maxdepth 1 -type f \( -name 'test_cli*.py' -o -name 'test_colab*.py' \) | sort | tr '\n' ' ')
             echo "$FILES"
             python -m pytest -q $FILES
 
-  legacy_qc:
+  legacy_config:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run QC tests
-          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_q*.py' | sort)
+          name: Run configuration tests
+          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_config*.py' | sort)
+
+  legacy_cluster_conservation:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          name: Run clustering and conservation tests
+          command: |
+            FILES=$(find tests -maxdepth 1 -type f \( -name 'test_clustering*.py' -o -name 'test_conservation*.py' \) | sort | tr '\n' ' ')
+            echo "$FILES"
+            python -m pytest -q $FILES
 
 workflows:
   ci:
     jobs:
-      - legacy_panel:
+      - legacy_checkpoint:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_pipeline:
+      - legacy_cli_colab:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_planning_provenance:
+      - legacy_config:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_primer:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_qc:
+      - legacy_cluster_conservation:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
