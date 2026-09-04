@@ -11,60 +11,83 @@ commands:
             python -m pip install -e . pytest
 
 jobs:
-  legacy_checkpoint:
+  checkpoint_codecs:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run checkpoint tests
-          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_checkpoint*.py' | sort)
+          command: python -m pytest -q tests/test_checkpoint_codecs.py
 
-  legacy_cli_colab:
+  checkpoint_stages:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run CLI and low-level Colab tests
-          command: |
-            FILES=$(find tests -maxdepth 1 -type f \( -name 'test_cli*.py' -o -name 'test_colab*.py' \) | sort | tr '\n' ' ')
-            echo "$FILES"
-            python -m pytest -q $FILES
+          command: python -m pytest -q tests/test_checkpoint_stages.py
 
-  legacy_config:
+  checkpointing:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run configuration tests
-          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_config*.py' | sort)
+          command: python -m pytest -q tests/test_checkpointing.py
 
-  legacy_cluster_conservation:
+  pipeline_panel:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run clustering and conservation tests
-          command: |
-            FILES=$(find tests -maxdepth 1 -type f \( -name 'test_clustering*.py' -o -name 'test_conservation*.py' \) | sort | tr '\n' ' ')
-            echo "$FILES"
-            python -m pytest -q $FILES
+          command: python -m pytest -q tests/test_pipeline_panel.py
+
+  pipeline_ranking:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          command: python -m pytest -q tests/test_pipeline_ranking.py
+
+  pipeline_resume:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          command: python -m pytest -q tests/test_pipeline_resume.py
+
+  pipeline_specificity:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          command: python -m pytest -q tests/test_pipeline_specificity.py
 
 workflows:
   ci:
     jobs:
-      - legacy_checkpoint:
+      - checkpoint_codecs:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_cli_colab:
+      - checkpoint_stages:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_config:
+      - checkpointing:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_cluster_conservation:
+      - pipeline_panel:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - pipeline_ranking:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - pipeline_resume:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - pipeline_specificity:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
