@@ -104,7 +104,8 @@ def _report_with_source(
         primer3_details=primer3_details,
         artifacts=artifacts,
     )
-    report["candidate_source"] = candidate_source
+    if status == "COMPLETE":
+        report["candidate_source"] = candidate_source
     return report
 
 
