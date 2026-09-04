@@ -1,28 +1,64 @@
 version: 2.1
-jobs:
-  guided_integration_red:
+executors:
+  python:
     docker:
       - image: cimg/python:3.12
     resource_class: small
+commands:
+  install_project:
     steps:
-      - checkout
       - run:
           name: Install Python project
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
+  install_tools:
+    steps:
       - run:
           name: Install integration tools
           command: |
             sudo apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cd-hit mafft primer3
-            command -v mafft
-            command -v primer3_core
+jobs:
+  guided_gate:
+    executor: python
+    steps:
+      - checkout
+      - install_project
       - run:
-          name: RED guided end-to-end integration
-          command: python -m unittest integration_tests.test_guided_contrastive_demo -q
+          command: python -m unittest integration_tests.test_guided_contrastive_diagnostics.GuidedContrastiveDiagnostics.test_gate_and_approval -q
+  guided_resume:
+    executor: python
+    steps:
+      - checkout
+      - install_project
+      - install_tools
+      - run:
+          command: python -m unittest integration_tests.test_guided_contrastive_diagnostics.GuidedContrastiveDiagnostics.test_resume_reaches_completed -q
+  guided_report:
+    executor: python
+    steps:
+      - checkout
+      - install_project
+      - install_tools
+      - run:
+          command: python -m unittest integration_tests.test_guided_contrastive_diagnostics.GuidedContrastiveDiagnostics.test_contrast_report_is_published -q
+  guided_contributors:
+    executor: python
+    steps:
+      - checkout
+      - install_project
+      - install_tools
+      - run:
+          command: python -m unittest integration_tests.test_guided_contrastive_diagnostics.GuidedContrastiveDiagnostics.test_candidate_retains_multiple_contributing_windows -q
 workflows:
   ci:
     jobs:
-      - guided_integration_red:
+      - guided_gate:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - guided_resume:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - guided_report:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - guided_contributors:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
