@@ -69,10 +69,26 @@ def _redact_consensus(text: str, input_text: str) -> str:
     return text
 
 
+def _validate_contrast_anchor(candidate: CandidateRegion) -> None:
+    if not (
+        candidate.reference_start
+        <= candidate.peak_start
+        <= candidate.peak_end
+        <= candidate.reference_end
+    ):
+        raise PrimerDesignError(
+            f"Primer3 candidate '{candidate.region_id}' has contrast anchor "
+            f"{candidate.peak_start}..{candidate.peak_end} outside candidate region "
+            f"{candidate.reference_start}..{candidate.reference_end}."
+        )
+
+
 def build_primer3_input(
     consensus: str,
     candidates: tuple[CandidateRegion, ...],
     config: PrimerDesignConfig,
+    *,
+    require_contrast_anchor: bool = False,
 ) -> str:
     """Serialize deterministic Primer3 v4 Boulder-IO input records."""
     if (
@@ -95,32 +111,41 @@ def build_primer3_input(
             f"SEQUENCE_ID={candidate.region_id}",
             f"SEQUENCE_TEMPLATE={consensus}",
             f"SEQUENCE_INCLUDED_REGION={included_start},{included_length}",
-            "PRIMER_TASK=generic",
-            "PRIMER_FIRST_BASE_INDEX=0",
-            "PRIMER_PICK_LEFT_PRIMER=1",
-            "PRIMER_PICK_INTERNAL_OLIGO=1",
-            "PRIMER_PICK_RIGHT_PRIMER=1",
-            f"PRIMER_NUM_RETURN={config.assays_per_region}",
-            f"PRIMER_PRODUCT_SIZE_RANGE={config.product_size_min}-{config.product_size_max}",
-            "PRIMER_EXPLAIN_FLAG=1",
-            f"PRIMER_MIN_SIZE={config.primer.min_size}",
-            f"PRIMER_OPT_SIZE={config.primer.opt_size}",
-            f"PRIMER_MAX_SIZE={config.primer.max_size}",
-            f"PRIMER_MIN_TM={config.primer.min_tm}",
-            f"PRIMER_OPT_TM={config.primer.opt_tm}",
-            f"PRIMER_MAX_TM={config.primer.max_tm}",
-            f"PRIMER_MIN_GC={config.primer.min_gc_percent}",
-            f"PRIMER_MAX_GC={config.primer.max_gc_percent}",
-            f"PRIMER_INTERNAL_MIN_SIZE={config.probe.min_size}",
-            f"PRIMER_INTERNAL_OPT_SIZE={config.probe.opt_size}",
-            f"PRIMER_INTERNAL_MAX_SIZE={config.probe.max_size}",
-            f"PRIMER_INTERNAL_MIN_TM={config.probe.min_tm}",
-            f"PRIMER_INTERNAL_OPT_TM={config.probe.opt_tm}",
-            f"PRIMER_INTERNAL_MAX_TM={config.probe.max_tm}",
-            f"PRIMER_INTERNAL_MIN_GC={config.probe.min_gc_percent}",
-            f"PRIMER_INTERNAL_MAX_GC={config.probe.max_gc_percent}",
-            "=",
         ]
+        if require_contrast_anchor:
+            _validate_contrast_anchor(candidate)
+            anchor_start = candidate.peak_start - 1
+            anchor_length = candidate.peak_end - candidate.peak_start + 1
+            lines.append(f"SEQUENCE_TARGET={anchor_start},{anchor_length}")
+        lines.extend(
+            [
+                "PRIMER_TASK=generic",
+                "PRIMER_FIRST_BASE_INDEX=0",
+                "PRIMER_PICK_LEFT_PRIMER=1",
+                "PRIMER_PICK_INTERNAL_OLIGO=1",
+                "PRIMER_PICK_RIGHT_PRIMER=1",
+                f"PRIMER_NUM_RETURN={config.assays_per_region}",
+                f"PRIMER_PRODUCT_SIZE_RANGE={config.product_size_min}-{config.product_size_max}",
+                "PRIMER_EXPLAIN_FLAG=1",
+                f"PRIMER_MIN_SIZE={config.primer.min_size}",
+                f"PRIMER_OPT_SIZE={config.primer.opt_size}",
+                f"PRIMER_MAX_SIZE={config.primer.max_size}",
+                f"PRIMER_MIN_TM={config.primer.min_tm}",
+                f"PRIMER_OPT_TM={config.primer.opt_tm}",
+                f"PRIMER_MAX_TM={config.primer.max_tm}",
+                f"PRIMER_MIN_GC={config.primer.min_gc_percent}",
+                f"PRIMER_MAX_GC={config.primer.max_gc_percent}",
+                f"PRIMER_INTERNAL_MIN_SIZE={config.probe.min_size}",
+                f"PRIMER_INTERNAL_OPT_SIZE={config.probe.opt_size}",
+                f"PRIMER_INTERNAL_MAX_SIZE={config.probe.max_size}",
+                f"PRIMER_INTERNAL_MIN_TM={config.probe.min_tm}",
+                f"PRIMER_INTERNAL_OPT_TM={config.probe.opt_tm}",
+                f"PRIMER_INTERNAL_MAX_TM={config.probe.max_tm}",
+                f"PRIMER_INTERNAL_MIN_GC={config.probe.min_gc_percent}",
+                f"PRIMER_INTERNAL_MAX_GC={config.probe.max_gc_percent}",
+                "=",
+            ]
+        )
         records.append("\n".join(lines))
     return "\n".join(records) + ("\n" if records else "")
 
@@ -129,6 +154,8 @@ def parse_primer3_output(
     text: str,
     candidates: tuple[CandidateRegion, ...],
     consensus: str,
+    *,
+    require_contrast_anchor: bool = False,
 ) -> tuple[tuple[AssayCandidate, ...], dict[str, dict[str, str]]]:
     """Parse Primer3 v4 Boulder-IO records into typed assay candidates."""
     records = _split_records(text)
@@ -159,6 +186,8 @@ def parse_primer3_output(
     assays: list[AssayCandidate] = []
     details: dict[str, dict[str, str]] = {}
     for candidate in candidates:
+        if require_contrast_anchor:
+            _validate_contrast_anchor(candidate)
         record = records_by_id[candidate.region_id]
         details[candidate.region_id] = {
             key: value
@@ -214,6 +243,14 @@ def parse_primer3_output(
                     f"Primer3 output pair {index} reports product size "
                     f"{product_size}, but its primers imply coordinate-derived "
                     f"size {coordinate_product_size}."
+                )
+            if require_contrast_anchor and not (
+                forward.reference_start <= candidate.peak_start
+                and candidate.peak_end <= reverse.reference_end
+            ):
+                raise PrimerDesignError(
+                    f"Primer3 output pair {index} does not contain the required "
+                    f"contrast anchor {candidate.peak_start}..{candidate.peak_end}."
                 )
             assays.append(
                 AssayCandidate(
