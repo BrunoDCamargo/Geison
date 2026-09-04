@@ -210,16 +210,23 @@ def design_primers(
         parse_primer3_output,
     )
 
+    require_contrast_anchor = candidate_source == "CONTRASTIVE_CONSERVATION"
     paths["report"].parent.mkdir(parents=True, exist_ok=True)
     paths["report"].unlink(missing_ok=True)
     input_text = build_primer3_input(
-        conservation.major_consensus, candidates, config
+        conservation.major_consensus,
+        candidates,
+        config,
+        require_contrast_anchor=require_contrast_anchor,
     )
     if runner is None:
         runner = SubprocessPrimer3Runner()
     output_text = runner.run(input_text)
     assays, primer3_details = parse_primer3_output(
-        output_text, candidates, conservation.major_consensus
+        output_text,
+        candidates,
+        conservation.major_consensus,
+        require_contrast_anchor=require_contrast_anchor,
     )
     report = _report_with_source(
         status="COMPLETE",
