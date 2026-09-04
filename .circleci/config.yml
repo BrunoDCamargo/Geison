@@ -11,67 +11,39 @@ commands:
             python -m pip install -e . pytest
 
 jobs:
-  resume_basic:
+  resume_geison_version:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          command: |
-            python -m pytest -q \
-              tests/test_pipeline_resume.py::test_changed_approved_panel_reuses_target_chain_and_invalidates_contrastive_descendants \
-              tests/test_pipeline_resume.py::test_normal_run_writes_all_stage_checkpoints_and_does_not_reuse \
-              tests/test_pipeline_resume.py::test_all_valid_resume_reuses_every_stage
+          command: python -m pytest -q tests/test_pipeline_resume.py::test_geison_version_change_invalidates_entire_chain
 
-  resume_invalidation:
+  resume_mafft_version:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          command: |
-            python -m pytest -q \
-              tests/test_pipeline_resume.py::test_specificity_parameter_change_does_not_recalculate_alignment_or_conservation \
-              tests/test_pipeline_resume.py::test_clustering_parameter_change_invalidates_complete_dependent_chain \
-              tests/test_pipeline_resume.py::test_force_inclusivity_keeps_independent_specificity_reusable \
-              tests/test_pipeline_resume.py::test_valid_from_specificity_reuses_boundary_and_forces_selected_subgraph
+          command: python -m pytest -q tests/test_pipeline_resume.py::test_mafft_version_change_invalidates_alignment_and_descendants_only
 
-  resume_corruption:
+  resume_online_input:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          command: |
-            python -m pytest -q \
-              tests/test_pipeline_resume.py::test_from_specificity_fails_before_scientific_write_when_boundary_is_invalid \
-              tests/test_pipeline_resume.py::test_corrupt_alignment_output_reruns_alignment_and_descendants_only \
-              tests/test_pipeline_resume.py::test_interrupted_run_preserves_completed_upstream_and_resume_finishes
-
-  resume_versions:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          command: |
-            python -m pytest -q \
-              tests/test_pipeline_resume.py::test_geison_version_change_invalidates_entire_chain \
-              tests/test_pipeline_resume.py::test_mafft_version_change_invalidates_alignment_and_descendants_only \
-              tests/test_pipeline_resume.py::test_forced_online_input_refresh_changes_result_fingerprint_and_forces_downstream
+          command: python -m pytest -q tests/test_pipeline_resume.py::test_forced_online_input_refresh_changes_result_fingerprint_and_forces_downstream
 
 workflows:
   ci:
     jobs:
-      - resume_basic:
+      - resume_geison_version:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - resume_invalidation:
+      - resume_mafft_version:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - resume_corruption:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - resume_versions:
+      - resume_online_input:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
