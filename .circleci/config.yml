@@ -1,25 +1,36 @@
 version: 2.1
 
-jobs:
-  test:
+executors:
+  python:
     docker:
       - image: cimg/python:3.12
     resource_class: small
+
+commands:
+  install_project:
     steps:
       - checkout
-
       - run:
           name: Install Python project and test runner
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
 
+jobs:
+  unit_regression:
+    executor: python
+    steps:
+      - install_project
       - run:
-          name: Run full unit and regression suite
+          name: Run full pytest suite
           command: python -m pytest -q
 
+  cli_smoke:
+    executor: python
+    steps:
+      - install_project
       - run:
-          name: Smoke test installed CLI
+          name: Smoke installed CLI
           command: |
             qpcr-pipeline doctor
             qpcr-pipeline panel approve --help
@@ -27,34 +38,28 @@ jobs:
             python -c "import json; p=json.load(open('approved-panel-smoke.json', encoding='utf-8')); assert p['status']=='APPROVED'; assert p['approved_by_user'] is True; assert p['proposal_sha256'].startswith('sha256:')"
             rm approved-panel-smoke.json
 
-      - when:
-          condition:
-            or:
-              - equal: [main, << pipeline.git.branch >>]
-              - equal: [feat/contrastive-conservation-guided-colab, << pipeline.git.branch >>]
-          steps:
-            - run:
-                name: Install integration tools
-                command: |
-                  sudo apt-get update
-                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                    cd-hit \
-                    mafft \
-                    primer3
-
-            - run:
-                name: Verify integration tools
-                command: |
-                  command -v cd-hit-est
-                  command -v mafft
-                  command -v primer3_core
-
-            - run:
-                name: Run full integration suite
-                command: python -m unittest discover -s integration_tests -q
+  integration:
+    executor: python
+    steps:
+      - install_project
+      - run:
+          name: Install integration tools
+          command: |
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cd-hit mafft primer3
+            command -v cd-hit-est
+            command -v mafft
+            command -v primer3_core
+      - run:
+          name: Run full integration suite
+          command: python -m unittest discover -s integration_tests -q
 
 workflows:
   ci:
     jobs:
-      - test:
-          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main" or pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - unit_regression:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - cli_smoke:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - integration:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
