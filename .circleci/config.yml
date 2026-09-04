@@ -1,21 +1,28 @@
 version: 2.1
 jobs:
-  guided_colab_red:
+  guided_integration_red:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - checkout
       - run:
-          name: Install
+          name: Install Python project
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
       - run:
-          name: RED guided Colab contract
-          command: python -m pytest -q tests/test_guided_colab_notebook.py
+          name: Install integration tools
+          command: |
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cd-hit mafft primer3
+            command -v mafft
+            command -v primer3_core
+      - run:
+          name: RED guided end-to-end integration
+          command: python -m unittest integration_tests.test_guided_contrastive_demo -q
 workflows:
   ci:
     jobs:
-      - guided_colab_red:
+      - guided_integration_red:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
