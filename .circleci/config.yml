@@ -43,8 +43,8 @@ jobs:
             command -v primer3_core
 
       - run:
-          name: Run guided contrastive real-tool acceptance
-          command: python -m pytest integration_tests/test_guided_contrastive_demo.py -q
+          name: Run full real-tool integration suite
+          command: python -m unittest discover -s integration_tests -q
 
 workflows:
   ci:
