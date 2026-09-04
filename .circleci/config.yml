@@ -1,90 +1,100 @@
 version: 2.1
 
+commands:
+  install_project:
+    steps:
+      - checkout
+      - run:
+          name: Install
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -e . pytest
+
 jobs:
-  legacy_af:
+  legacy_a:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
-      - checkout
+      - install_project
       - run:
-          name: Install
-          command: |
-            python -m pip install --upgrade pip
-            python -m pip install -e . pytest
+          name: Run legacy A tests
+          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_a*.py' | sort)
+
+  legacy_c:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
       - run:
-          name: Run legacy tests A-F
+          name: Run legacy C tests
           command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_[a-f]*.py' | grep -Ev 'test_(challenge_panel|contrastive_|execution|guided_|primer_contrastive_source|region_selection)\.py$' | sort | tr '\n' ' ')
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_c*.py' | grep -Ev 'test_(challenge_panel|contrastive_)' | sort | tr '\n' ' ')
             echo "$FILES"
-            test -n "$FILES"
             python -m pytest -q $FILES
 
-  legacy_gl:
+  legacy_df:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
-      - checkout
+      - install_project
       - run:
-          name: Install
+          name: Run legacy D-F tests
           command: |
-            python -m pip install --upgrade pip
-            python -m pip install -e . pytest
-      - run:
-          name: Run legacy tests G-L
-          command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_[g-l]*.py' | grep -Ev 'test_(challenge_panel|contrastive_|execution|guided_|primer_contrastive_source|region_selection)\.py$' | sort | tr '\n' ' ')
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_[d-f]*.py' | grep -Ev 'test_execution\.py$' | sort | tr '\n' ' ')
             echo "$FILES"
-            test -n "$FILES"
             python -m pytest -q $FILES
 
-  legacy_mr:
+  legacy_mn:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
-      - checkout
+      - install_project
       - run:
-          name: Install
-          command: |
-            python -m pip install --upgrade pip
-            python -m pip install -e . pytest
+          name: Run legacy M-N tests
+          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_[m-n]*.py' | sort)
+
+  legacy_pq:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
       - run:
-          name: Run legacy tests M-R
+          name: Run legacy P-Q tests
           command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_[m-r]*.py' | grep -Ev 'test_(challenge_panel|contrastive_|execution|guided_|primer_contrastive_source|region_selection)\.py$' | sort | tr '\n' ' ')
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_[p-q]*.py' | grep -Ev 'test_primer_contrastive_source\.py$' | sort | tr '\n' ' ')
             echo "$FILES"
-            test -n "$FILES"
             python -m pytest -q $FILES
 
-  legacy_sz:
+  legacy_r:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
-      - checkout
+      - install_project
       - run:
-          name: Install
+          name: Run legacy R tests
           command: |
-            python -m pip install --upgrade pip
-            python -m pip install -e . pytest
-      - run:
-          name: Run legacy tests S-Z
-          command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_[s-z]*.py' | grep -Ev 'test_(challenge_panel|contrastive_|execution|guided_|primer_contrastive_source|region_selection)\.py$' | sort | tr '\n' ' ')
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_r*.py' | grep -Ev 'test_region_selection\.py$' | sort | tr '\n' ' ')
             echo "$FILES"
-            test -n "$FILES"
             python -m pytest -q $FILES
 
 workflows:
   ci:
     jobs:
-      - legacy_af:
+      - legacy_a:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_gl:
+      - legacy_c:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_mr:
+      - legacy_df:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_sz:
+      - legacy_mn:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - legacy_pq:
+          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+      - legacy_r:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
