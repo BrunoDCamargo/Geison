@@ -18,18 +18,34 @@ def _all_valid():
     return {stage: True for stage in STAGE_ORDER}
 
 
-def test_panel_is_first_stage_and_input_depends_on_it():
+def test_panel_and_input_are_independent_roots_with_contrast_join():
     assert STAGE_ORDER[0] == "panel"
     assert STAGE_DEPENDENCIES["panel"] == ()
-    assert STAGE_DEPENDENCIES["input"] == ("panel",)
+    assert STAGE_DEPENDENCIES["input"] == ()
+    assert STAGE_DEPENDENCIES["contrastive_conservation"] == (
+        "panel",
+        "conservation",
+    )
+    assert STAGE_DEPENDENCIES["primer_design"] == ("contrastive_conservation",)
 
 
-def test_resume_invalid_panel_forces_every_downstream_stage():
+def test_resume_invalid_panel_preserves_target_chain_and_forces_contrast_descendants():
     reusable = _all_valid()
     reusable["panel"] = False
     actions = _actions(plan_from_validity(ExecutionPolicy(resume=True), reusable))
-    assert actions["panel"] == "RUN"
-    assert all(actions[stage] == "FORCED" for stage in STAGE_ORDER[1:])
+    assert actions == {
+        "panel": "RUN",
+        "input": "REUSE",
+        "qc": "REUSE",
+        "clustering": "REUSE",
+        "alignment": "REUSE",
+        "conservation": "REUSE",
+        "contrastive_conservation": "FORCED",
+        "primer_design": "FORCED",
+        "inclusivity": "FORCED",
+        "specificity": "FORCED",
+        "ranking": "FORCED",
+    }
 
 
 def test_specificity_descendants_only_include_ranking():
@@ -44,6 +60,8 @@ def test_from_specificity_requires_inclusivity_branch():
     required = set(required_reuse_boundary("specificity"))
     assert "inclusivity" in required
     assert "primer_design" in required
+    assert "contrastive_conservation" in required
+    assert "panel" in required
     assert "qc" in required
     assert "specificity" not in required
     assert "ranking" not in required
@@ -90,6 +108,7 @@ def test_resume_invalid_specificity_forces_only_specificity_and_ranking():
         "clustering": "REUSE",
         "alignment": "REUSE",
         "conservation": "REUSE",
+        "contrastive_conservation": "REUSE",
         "primer_design": "REUSE",
         "inclusivity": "REUSE",
         "specificity": "RUN",
@@ -108,6 +127,7 @@ def test_resume_invalid_clustering_forces_entire_dependent_chain():
         "clustering": "RUN",
         "alignment": "FORCED",
         "conservation": "FORCED",
+        "contrastive_conservation": "FORCED",
         "primer_design": "FORCED",
         "inclusivity": "FORCED",
         "specificity": "FORCED",
@@ -143,6 +163,7 @@ def test_from_step_specificity_runs_specificity_and_ranking_only():
         "clustering": "REUSE",
         "alignment": "REUSE",
         "conservation": "REUSE",
+        "contrastive_conservation": "REUSE",
         "primer_design": "REUSE",
         "inclusivity": "REUSE",
         "specificity": "FORCED",
