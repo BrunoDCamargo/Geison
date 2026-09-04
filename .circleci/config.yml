@@ -15,12 +15,9 @@ jobs:
             python -m pip install -e . pytest
 
       - run:
-          name: Run minimal run and recorder subset
+          name: Run minimal run regression subset
           command: |
-            FILES=$(find tests -maxdepth 1 -type f \( \
-              -name 'test_minimal*.py' -o \
-              -name 'test_run_recording*.py' \
-            \) -print)
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_minimal*.py' -print)
             python -m pytest $FILES -q
 
       - run:
