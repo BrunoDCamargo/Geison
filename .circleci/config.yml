@@ -1,130 +1,81 @@
 version: 2.1
 
-executors:
-  python:
+jobs:
+  legacy_af:
     docker:
       - image: cimg/python:3.12
     resource_class: small
-
-commands:
-  install_project:
     steps:
       - checkout
       - run:
-          name: Install Python project and test runner
+          name: Install
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
-
-  legacy_files_af:
-    steps:
       - run:
           name: Run legacy tests A-F
           command: |
-            FILES=$(python - <<'PY'
-            from pathlib import Path
-            excluded = {
-                'test_challenge_panel.py', 'test_contrastive_similarity.py',
-                'test_contrastive_conservation.py', 'test_contrastive_report_html.py',
-                'test_contrastive_stage_contract.py', 'test_primer_contrastive_source.py',
-                'test_region_selection.py', 'test_contrastive_checkpoint_contract.py',
-                'test_contrastive_checkpoint_integration.py', 'test_execution.py',
-                'test_guided_demo.py', 'test_guided_colab_notebook.py',
-            }
-            files = [p for p in sorted(Path('tests').glob('test_*.py')) if p.name not in excluded and 'a' <= p.name[5].lower() <= 'f']
-            print(' '.join(map(str, files)))
-            PY
-            )
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_[a-f]*.py' | grep -Ev 'test_(challenge_panel|contrastive_|execution|guided_|primer_contrastive_source|region_selection)\.py$' | sort | tr '\n' ' ')
             echo "$FILES"
+            test -n "$FILES"
             python -m pytest -q $FILES
 
-  legacy_files_gl:
+  legacy_gl:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
     steps:
+      - checkout
+      - run:
+          name: Install
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -e . pytest
       - run:
           name: Run legacy tests G-L
           command: |
-            FILES=$(python - <<'PY'
-            from pathlib import Path
-            excluded = {
-                'test_challenge_panel.py', 'test_contrastive_similarity.py',
-                'test_contrastive_conservation.py', 'test_contrastive_report_html.py',
-                'test_contrastive_stage_contract.py', 'test_primer_contrastive_source.py',
-                'test_region_selection.py', 'test_contrastive_checkpoint_contract.py',
-                'test_contrastive_checkpoint_integration.py', 'test_execution.py',
-                'test_guided_demo.py', 'test_guided_colab_notebook.py',
-            }
-            files = [p for p in sorted(Path('tests').glob('test_*.py')) if p.name not in excluded and 'g' <= p.name[5].lower() <= 'l']
-            print(' '.join(map(str, files)))
-            PY
-            )
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_[g-l]*.py' | grep -Ev 'test_(challenge_panel|contrastive_|execution|guided_|primer_contrastive_source|region_selection)\.py$' | sort | tr '\n' ' ')
             echo "$FILES"
+            test -n "$FILES"
             python -m pytest -q $FILES
 
-  legacy_files_mr:
+  legacy_mr:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
     steps:
+      - checkout
+      - run:
+          name: Install
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -e . pytest
       - run:
           name: Run legacy tests M-R
           command: |
-            FILES=$(python - <<'PY'
-            from pathlib import Path
-            excluded = {
-                'test_challenge_panel.py', 'test_contrastive_similarity.py',
-                'test_contrastive_conservation.py', 'test_contrastive_report_html.py',
-                'test_contrastive_stage_contract.py', 'test_primer_contrastive_source.py',
-                'test_region_selection.py', 'test_contrastive_checkpoint_contract.py',
-                'test_contrastive_checkpoint_integration.py', 'test_execution.py',
-                'test_guided_demo.py', 'test_guided_colab_notebook.py',
-            }
-            files = [p for p in sorted(Path('tests').glob('test_*.py')) if p.name not in excluded and 'm' <= p.name[5].lower() <= 'r']
-            print(' '.join(map(str, files)))
-            PY
-            )
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_[m-r]*.py' | grep -Ev 'test_(challenge_panel|contrastive_|execution|guided_|primer_contrastive_source|region_selection)\.py$' | sort | tr '\n' ' ')
             echo "$FILES"
+            test -n "$FILES"
             python -m pytest -q $FILES
 
-  legacy_files_sz:
+  legacy_sz:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
     steps:
+      - checkout
+      - run:
+          name: Install
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -e . pytest
       - run:
           name: Run legacy tests S-Z
           command: |
-            FILES=$(python - <<'PY'
-            from pathlib import Path
-            excluded = {
-                'test_challenge_panel.py', 'test_contrastive_similarity.py',
-                'test_contrastive_conservation.py', 'test_contrastive_report_html.py',
-                'test_contrastive_stage_contract.py', 'test_primer_contrastive_source.py',
-                'test_region_selection.py', 'test_contrastive_checkpoint_contract.py',
-                'test_contrastive_checkpoint_integration.py', 'test_execution.py',
-                'test_guided_demo.py', 'test_guided_colab_notebook.py',
-            }
-            files = [p for p in sorted(Path('tests').glob('test_*.py')) if p.name not in excluded and 's' <= p.name[5].lower() <= 'z']
-            print(' '.join(map(str, files)))
-            PY
-            )
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_[s-z]*.py' | grep -Ev 'test_(challenge_panel|contrastive_|execution|guided_|primer_contrastive_source|region_selection)\.py$' | sort | tr '\n' ' ')
             echo "$FILES"
+            test -n "$FILES"
             python -m pytest -q $FILES
-
-jobs:
-  legacy_af:
-    executor: python
-    steps:
-      - install_project
-      - legacy_files_af
-  legacy_gl:
-    executor: python
-    steps:
-      - install_project
-      - legacy_files_gl
-  legacy_mr:
-    executor: python
-    steps:
-      - install_project
-      - legacy_files_mr
-  legacy_sz:
-    executor: python
-    steps:
-      - install_project
-      - legacy_files_sz
 
 workflows:
   ci:
