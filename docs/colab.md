@@ -1,8 +1,18 @@
 # Google Colab
 
-O fluxo oficial do Geison para Google Colab está em [`notebooks/geison_colab.ipynb`](../notebooks/geison_colab.ipynb).
+Para pesquisadores e avaliadores, o fluxo recomendado está em [`notebooks/geison_guided_colab.ipynb`](../notebooks/geison_guided_colab.ipynb), com instruções detalhadas em [`docs/guided-colab.md`](guided-colab.md).
 
-O notebook prepara o ambiente, escreve a configuração YAML e chama o CLI `qpcr-pipeline`. A lógica científica permanece no pacote. O fluxo atual inclui o gate de painel antes da execução científica: `panel.proposal` → `ACTION_REQUIRED / PANEL_APPROVAL_REQUIRED` → revisão humana → `panel approve` → `frozen_manifest` → `--resume`.
+Ele apresenta a sequência científica como:
+
+```text
+Target conservation -> Target vs non-target contrast -> Assay design -> Specificity
+```
+
+O notebook guiado oferece modo **Demo (synthetic)** e modo **Project**, mantém o gate humano `APROVAR`, mostra os estados de `run_manifest.json` e renderiza apenas artefatos publicados pelo Geison. A lógica científica continua no pacote e no CLI.
+
+O notebook anterior, [`notebooks/geison_colab.ipynb`](../notebooks/geison_colab.ipynb), permanece disponível para validação operacional de baixo nível e troubleshooting do ambiente.
+
+Ambos preparam o ambiente, escrevem a configuração YAML e chamam o CLI `qpcr-pipeline`. O fluxo inclui o gate de painel antes da execução científica: `panel.proposal` -> `ACTION_REQUIRED / PANEL_APPROVAL_REQUIRED` -> revisão humana -> `panel approve` -> `frozen_manifest` -> `--resume`.
 
 ## Primeira execução
 
@@ -75,15 +85,21 @@ Após o `--resume`, o notebook confirma:
 - `.checkpoints/input/manifest.json`;
 - `run_manifest.json` com `panel_provenance`.
 
-## Relatório
+## Relatórios
 
-Quando a configuração publica o relatório, ele fica em:
+O relatório específico de contraste fica em:
+
+```text
+/content/geison_run/output/contrastive_conservation/report.html
+```
+
+Quando a configuração publica o relatório final consolidado, ele fica em:
 
 ```text
 /content/geison_run/output/report.html
 ```
 
-A última célula serve esse `report.html` por uma porta local e o abre em um iframe do Colab.
+No notebook guiado, as visualizações de conservação, contraste, desenho, cobertura, especificidade e ranking são produzidas a partir dos TSV/JSON/HTML publicados. `PARTIAL`, `FAILED` e `ACTION_REQUIRED` não são apresentados como conclusão bem-sucedida.
 
 ## Persistência no Colab
 
