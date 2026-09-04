@@ -22,6 +22,7 @@ from qpcr_pipeline.checkpointing import CheckpointManager, CheckpointManifest
 from qpcr_pipeline.clustering import CdHitRunner, cluster_sequences
 from qpcr_pipeline.config import NcbiInputConfig, PipelineConfig
 from qpcr_pipeline.conservation import analyze_conservation
+from qpcr_pipeline.contrastive_conservation import analyze_contrastive_conservation
 from qpcr_pipeline.diagnostics import EnvironmentInspector
 from qpcr_pipeline.execution import STAGE_ORDER, ExecutionPolicy
 from qpcr_pipeline.inclusivity import evaluate_inclusivity
@@ -29,6 +30,7 @@ from qpcr_pipeline.local_input import LocalSequenceRecord, load_genbank, load_lo
 from qpcr_pipeline.ncbi import NcbiClient, acquire_ncbi_dataset, validate_frozen_dataset
 from qpcr_pipeline.panel_manifest import (
     PanelResult,
+    load_approved_panel_manifest,
     materialize_approved_panel,
     prepare_panel_preflight,
 )
@@ -180,7 +182,6 @@ def run_pipeline(
         [asdict(decision) for decision in plan.decisions],
     )
 
-    # A new attempt must never expose a stale success summary while it is running.
     (output_dir / "run_summary.json").unlink(missing_ok=True)
     (output_dir / "qc_report.json").unlink(missing_ok=True)
 
@@ -238,6 +239,7 @@ def run_pipeline(
         clustering = results["clustering"]
         alignment = results["alignment"]
         conservation = results["conservation"]
+        contrastive = results["contrastive_conservation"]
         primer_design = results["primer_design"]
         inclusivity = results["inclusivity"]
         specificity = results["specificity"]
@@ -305,6 +307,12 @@ def run_pipeline(
                 "reference_id": conservation.reference_id,
                 "position_count": len(conservation.positions),
                 "window_count": len(conservation.windows),
+            },
+            "contrastive_conservation": {
+                "status": contrastive.status,
+                "window_count": len(contrastive.windows),
+                "challenge_dataset_count": len(contrastive.challenge_datasets),
+                "candidate_region_count": len(contrastive.candidates),
             },
             "primer_design": {
                 "status": primer_design.status,
@@ -517,11 +525,30 @@ def _run_stage(
         )
 
     conservation = results["conservation"]
+    if stage == "contrastive_conservation":
+        approved_panel = None
+        if config.contrastive_conservation.enabled:
+            if config.panel is None or config.panel.frozen_manifest is None:
+                raise ValueError(
+                    "Enabled contrastive conservation requires an approved frozen panel."
+                )
+            approved_panel = load_approved_panel_manifest(config.panel.frozen_manifest)
+        return analyze_contrastive_conservation(
+            conservation,
+            approved_panel,
+            config.off_targets,
+            config.contrastive_conservation,
+            config.primer_design,
+            output_dir,
+        )
+
+    contrastive = results["contrastive_conservation"]
     if stage == "primer_design":
         return design_primers(
             conservation,
             config.primer_design,
             output_dir,
+            contrastive=contrastive,
             runner=primer3_runner,
         )
 

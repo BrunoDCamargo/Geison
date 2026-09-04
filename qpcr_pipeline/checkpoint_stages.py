@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Mapping, Protocol
 
+from qpcr_pipeline.challenge_panel import resolve_challenge_datasets
 from qpcr_pipeline.checkpoint_codecs import (
     ALIGNMENT_CODEC,
     CLUSTERING_CODEC,
@@ -69,6 +70,18 @@ STAGE_DEFINITIONS: dict[str, StageCheckpointDefinition] = {
     for stage in STAGE_ORDER
 }
 
+_REGION_SELECTION_FIELDS = (
+    "max_candidate_regions",
+    "candidate_region_length",
+    "max_region_overlap_fraction",
+    "min_mean_conservation",
+    "min_minimum_conservation",
+    "min_mean_coverage",
+    "max_mean_gap_frequency",
+    "max_mean_entropy_bits",
+    "min_usable_fraction",
+)
+
 
 def geison_version() -> str:
     return importlib.metadata.version("geison-qpcr")
@@ -103,6 +116,37 @@ def _input_parameters(config: PipelineConfig) -> dict[str, object]:
     }
 
 
+def _contrastive_challenge_semantics(config: PipelineConfig) -> list[dict[str, object]]:
+    if not config.contrastive_conservation.enabled:
+        return []
+    if config.panel is None or config.panel.frozen_manifest is None:
+        raise ValueError(
+            "Enabled contrastive conservation requires an approved frozen panel."
+        )
+    manifest = load_approved_panel_manifest(config.panel.frozen_manifest)
+    values = [
+        {
+            "name": item.name,
+            "criticality": item.criticality,
+            "dataset_roles": list(item.dataset_roles),
+        }
+        for item in manifest.definition.non_targets
+        if "CHALLENGE" in item.dataset_roles
+    ]
+    if not values:
+        raise ValueError(
+            "Enabled contrastive conservation requires at least one approved CHALLENGE dataset."
+        )
+    return values
+
+
+def _contrastive_region_selection_parameters(config: PipelineConfig) -> dict[str, object]:
+    return {
+        field: getattr(config.primer_design, field)
+        for field in _REGION_SELECTION_FIELDS
+    }
+
+
 def stage_parameters(stage: str, config: PipelineConfig) -> Mapping[str, object]:
     if stage not in STAGE_DEFINITIONS:
         raise ValueError(f"unknown checkpoint stage: {stage}")
@@ -120,6 +164,12 @@ def stage_parameters(stage: str, config: PipelineConfig) -> Mapping[str, object]
         return asdict(config.alignment)
     if stage == "conservation":
         return {"target_name": config.target_name, "config": asdict(config.conservation)}
+    if stage == "contrastive_conservation":
+        return {
+            "config": asdict(config.contrastive_conservation),
+            "region_selection": _contrastive_region_selection_parameters(config),
+            "challenge_panel": _contrastive_challenge_semantics(config),
+        }
     if stage == "primer_design":
         return asdict(config.primer_design)
     if stage == "inclusivity":
@@ -169,7 +219,33 @@ def stage_input_identities(stage: str, config: PipelineConfig) -> Mapping[str, o
                 }
             }
         return {}
-
+    if stage == "contrastive_conservation":
+        if not config.contrastive_conservation.enabled:
+            return {}
+        if config.panel is None or config.panel.frozen_manifest is None:
+            raise ValueError(
+                "Enabled contrastive conservation requires an approved frozen panel."
+            )
+        manifest = load_approved_panel_manifest(config.panel.frozen_manifest)
+        bindings = resolve_challenge_datasets(manifest, config.off_targets)
+        identities: list[dict[str, object]] = []
+        for binding in bindings:
+            dataset = binding.dataset
+            identity: dict[str, object] = {
+                "name": binding.name,
+                "criticality": binding.criticality,
+                "source": dataset.source_type,
+                "records_sha256": dataset.sha256,
+            }
+            if dataset.frozen_manifest_path is not None:
+                identity["manifest_sha256"] = file_sha256(dataset.frozen_manifest_path)
+            identities.append(identity)
+        return {
+            "approved_panel": {
+                "sha256": file_sha256(config.panel.frozen_manifest),
+            },
+            "challenge_datasets": identities,
+        }
     if stage == "specificity":
         if not config.specificity.enabled:
             return {}
@@ -220,7 +296,12 @@ def stage_tool_identities(
         return {}
     if stage == "primer_design":
         conservation = stage_context.get("conservation")
-        if conservation is not None and primer3_required(conservation, config.primer_design):
+        contrastive = stage_context.get("contrastive_conservation")
+        if conservation is not None and primer3_required(
+            conservation,
+            config.primer_design,
+            contrastive=contrastive,
+        ):
             return {"primer3_core": dict(provider.identity("primer3_core"))}
         return {}
     if stage not in STAGE_DEFINITIONS:
