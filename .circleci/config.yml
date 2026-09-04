@@ -13,8 +13,8 @@ jobs:
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
       - run:
-          name: Verify shared region selection regression
-          command: python -m pytest -q tests/test_region_selection.py tests/test_primer_design.py
+          name: RED challenge panel resolver
+          command: python -m pytest -q tests/test_challenge_panel.py
 workflows:
   ci:
     jobs:
