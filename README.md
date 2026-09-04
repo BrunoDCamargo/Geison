@@ -4,6 +4,18 @@ Pipeline para desenho e avaliação in silico de ensaios qPCR/RT-qPCR.
 
 O desenvolvimento ativo acontece na branch `develop`.
 
+## Workbench guiado no Google Colab
+
+Para pesquisadores e avaliadores, use [`notebooks/geison_guided_colab.ipynb`](notebooks/geison_guided_colab.ipynb). O fluxo guiado mantém a lógica científica no Geison e organiza a análise em etapas visíveis:
+
+```text
+Target conservation -> Target vs non-target contrast -> Assay design -> Specificity
+```
+
+O notebook oferece um **Demo (synthetic)** determinístico e um modo **Project** para arquivos FASTA fornecidos pelo pesquisador. O painel precisa ser revisado e aprovado antes da execução científica. Os resultados são lidos dos artefatos TSV, JSON e HTML produzidos pelo CLI, e o estado final vem de `run_manifest.json`.
+
+O notebook [`notebooks/geison_colab.ipynb`](notebooks/geison_colab.ipynb) continua disponível para validação operacional de baixo nível. Consulte [`docs/guided-colab.md`](docs/guided-colab.md) para o fluxo guiado e [`docs/colab.md`](docs/colab.md) para a operação no Colab.
+
 ## Reprodutibilidade e diagnóstico
 
 Antes de executar um pipeline, o ambiente pode ser inspecionado sem configuração e sem acesso à rede:
