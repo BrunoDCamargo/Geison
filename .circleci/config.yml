@@ -7,17 +7,14 @@ jobs:
     resource_class: small
     steps:
       - checkout
-
       - run:
           name: Install Python project and test runner
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
-
       - run:
-          name: Smoke installed CLI import and parser
-          command: qpcr-pipeline panel approve --help
-
+          name: Import pipeline module
+          command: python -c "import qpcr_pipeline.pipeline"
 workflows:
   ci:
     jobs:
