@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
+import tempfile
 
 
 class ResearcherReportError(RuntimeError):
@@ -230,3 +232,35 @@ def scientific_outcome(
         "The recorded ranking classifications are insufficient for a conclusive in-silico "
         "assay outcome.",
     )
+
+
+def generate_researcher_report(output_dir: Path) -> Path:
+    """Render and atomically publish the final researcher-facing HTML report."""
+    root = Path(output_dir)
+    data = load_researcher_report_data(root)
+    from qpcr_pipeline.researcher_report_html import render_researcher_report_html
+
+    html = render_researcher_report_html(data)
+    destination = root / "report.html"
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=root,
+        prefix=".report.html.",
+        suffix=".tmp",
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(
+            descriptor,
+            "w",
+            encoding="utf-8",
+            newline="\n",
+        ) as handle:
+            handle.write(html)
+            if not html.endswith("\n"):
+                handle.write("\n")
+            handle.flush()
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
