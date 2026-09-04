@@ -11,6 +11,8 @@ from pathlib import Path
 
 import yaml
 
+from qpcr_pipeline.evidence_bundle import create_evidence_bundle
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = REPO_ROOT / "examples" / "guided_demo" / "generate_demo_data.py"
@@ -119,13 +121,94 @@ class GuidedContrastiveDemoIntegrationTest(unittest.TestCase):
             self.assertEqual(
                 primer_report["candidate_source"], "CONTRASTIVE_CONSERVATION"
             )
-            self.assertTrue((output / "specificity" / "specificity_report.json").is_file())
-            self.assertTrue((output / "ranking" / "ranking_report.json").is_file())
+            self.assertTrue(
+                primer_report["assays"],
+                "expected at least one Primer3 assay constrained by contrastive evidence",
+            )
+            candidates_by_id = {
+                candidate["region_id"]: candidate
+                for candidate in primer_report["candidates"]
+            }
+            for assay in primer_report["assays"]:
+                candidate = candidates_by_id[assay["region_id"]]
+                self.assertLessEqual(
+                    assay["forward_primer"]["reference_start"],
+                    candidate["peak_start"],
+                    assay["assay_id"],
+                )
+                self.assertGreaterEqual(
+                    assay["reverse_primer"]["reference_end"],
+                    candidate["peak_end"],
+                    assay["assay_id"],
+                )
+
+            inclusivity_report = json.loads(
+                (output / "inclusivity" / "inclusivity_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(inclusivity_report["status"], "COMPLETE")
+            self.assertEqual(
+                inclusivity_report["counts"]["evaluation_sequences"],
+                4,
+            )
+
+            specificity_report = json.loads(
+                (output / "specificity" / "specificity_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(specificity_report["status"], "COMPLETE")
+
+            ranking_report = json.loads(
+                (output / "ranking" / "ranking_report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(ranking_report["status"], "COMPLETE")
+            self.assertTrue(ranking_report["assays"])
+            classifications = {
+                assay["classification"] for assay in ranking_report["assays"]
+            }
+            self.assertTrue(
+                classifications & {"IN SILICO PASS", "REVIEW"},
+                "the corrected synthetic demo must not end with every assay HIGH_RISK",
+            )
+            self.assertTrue(
+                any(
+                    all(
+                        reason.get("code") != "DETECTABLE_OFF_TARGET"
+                        for reason in assay.get("reasons", [])
+                    )
+                    for assay in ranking_report["assays"]
+                ),
+                "expected at least one anchored assay without detectable off-target amplification",
+            )
 
             manifest = json.loads(
                 (output / "run_manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["status"], "COMPLETED")
+
+            report_path = output / "report.html"
+            self.assertTrue(report_path.is_file())
+            report_html = report_path.read_text(encoding="utf-8")
+            self.assertIn("Geison Researcher Report", report_html)
+            if "IN SILICO PASS" in classifications:
+                self.assertIn("In-silico candidate(s) identified", report_html)
+            else:
+                self.assertIn(
+                    "No in-silico pass; candidate(s) require review",
+                    report_html,
+                )
+
+            bundle = create_evidence_bundle(
+                output,
+                demo / "evidence_bundle.zip",
+                extra_files=(approved_config, approved_panel),
+            )
+            self.assertTrue(bundle.is_file())
+            self.assertGreater(bundle.stat().st_size, 0)
 
 
 if __name__ == "__main__":
