@@ -11,90 +11,72 @@ commands:
             python -m pip install -e . pytest
 
 jobs:
-  legacy_a:
+  legacy_panel:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run legacy A tests
-          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_a*.py' | sort)
+          name: Run panel tests
+          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_panel*.py' | sort)
 
-  legacy_c:
+  legacy_pipeline:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run legacy C tests
+          name: Run pipeline tests
+          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_pipeline*.py' | sort)
+
+  legacy_planning_provenance:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          name: Run planning and provenance tests
           command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_c*.py' | grep -Ev 'test_(challenge_panel|contrastive_)' | sort | tr '\n' ' ')
+            FILES=$(find tests -maxdepth 1 -type f \( -name 'test_planning*.py' -o -name 'test_provenance*.py' \) | sort | tr '\n' ' ')
+            echo "$FILES"
+            if [ -n "$FILES" ]; then python -m pytest -q $FILES; fi
+
+  legacy_primer:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - install_project
+      - run:
+          name: Run primer tests
+          command: |
+            FILES=$(find tests -maxdepth 1 -type f -name 'test_primer*.py' | grep -Ev 'test_primer_contrastive_source\.py$' | sort | tr '\n' ' ')
             echo "$FILES"
             python -m pytest -q $FILES
 
-  legacy_df:
+  legacy_qc:
     docker:
       - image: cimg/python:3.12
     resource_class: small
     steps:
       - install_project
       - run:
-          name: Run legacy D-F tests
-          command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_[d-f]*.py' | grep -Ev 'test_execution\.py$' | sort | tr '\n' ' ')
-            echo "$FILES"
-            python -m pytest -q $FILES
-
-  legacy_mn:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run legacy M-N tests
-          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_[m-n]*.py' | sort)
-
-  legacy_pq:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run legacy P-Q tests
-          command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_[p-q]*.py' | grep -Ev 'test_primer_contrastive_source\.py$' | sort | tr '\n' ' ')
-            echo "$FILES"
-            python -m pytest -q $FILES
-
-  legacy_r:
-    docker:
-      - image: cimg/python:3.12
-    resource_class: small
-    steps:
-      - install_project
-      - run:
-          name: Run legacy R tests
-          command: |
-            FILES=$(find tests -maxdepth 1 -type f -name 'test_r*.py' | grep -Ev 'test_region_selection\.py$' | sort | tr '\n' ' ')
-            echo "$FILES"
-            python -m pytest -q $FILES
+          name: Run QC tests
+          command: python -m pytest -q $(find tests -maxdepth 1 -type f -name 'test_q*.py' | sort)
 
 workflows:
   ci:
     jobs:
-      - legacy_a:
+      - legacy_panel:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_c:
+      - legacy_pipeline:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_df:
+      - legacy_planning_provenance:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_mn:
+      - legacy_primer:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_pq:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - legacy_r:
+      - legacy_qc:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
