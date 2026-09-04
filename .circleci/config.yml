@@ -13,8 +13,8 @@ jobs:
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
       - run:
-          name: RED challenge panel resolver
-          command: python -m pytest -q tests/test_challenge_panel.py
+          name: RED contrastive similarity engine
+          command: python -m pytest -q tests/test_contrastive_similarity.py
 workflows:
   ci:
     jobs:
