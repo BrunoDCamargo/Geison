@@ -112,7 +112,7 @@ def _config(tmp_path):
         primer_design=PrimerDesignConfig(
             enabled=True,
             max_candidate_regions=4,
-            candidate_region_length=100,
+            candidate_region_length=200,
         ),
         off_targets=(
             OffTargetConfig("challenge", fasta=challenge),
