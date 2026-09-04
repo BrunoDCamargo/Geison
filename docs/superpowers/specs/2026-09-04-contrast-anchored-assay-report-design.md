@@ -361,7 +361,7 @@ The E2E test must confirm:
 - `output/report.html` exists and contains the expected scientific outcome;
 - the evidence bundle can be created from the run artifacts.
 
-The synthetic fixture should contain enough sequence structure that at least one anchored assay can avoid the intentionally mutated challenge region and exercise a meaningful final specificity outcome. The test must not merely weaken specificity rules to force a PASS.
+The synthetic fixture should contain enough sequence structure that at least one anchor-constrained assay can exploit the intentionally altered challenge interval and reach a meaningful final specificity outcome. The test must not weaken specificity rules merely to force a PASS.
 
 ### 10.5 Report state coverage
 
