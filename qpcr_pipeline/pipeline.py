@@ -674,6 +674,20 @@ def _write_json_atomic(destination: Path, value: object) -> None:
 
 
 def _publish_researcher_report(output_dir: Path) -> None:
+    manifest_path = output_dir / "run_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    if not isinstance(manifest, dict):
+        return
+    effective_config = manifest.get("effective_config")
+    if not isinstance(effective_config, dict):
+        return
+    primer_design = effective_config.get("primer_design")
+    if not isinstance(primer_design, dict) or primer_design.get("enabled") is not True:
+        return
+
     report_path = output_dir / "report.html"
     error_path = output_dir / "report_error.json"
     report_path.unlink(missing_ok=True)
