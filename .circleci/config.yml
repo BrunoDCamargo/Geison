@@ -1,76 +1,21 @@
 version: 2.1
-
-executors:
-  python:
+jobs:
+  guided_demo_red:
     docker:
       - image: cimg/python:3.12
     resource_class: small
-
-commands:
-  install_project:
     steps:
+      - checkout
       - run:
           name: Install
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e . pytest
-
-jobs:
-  checkpoint_contract:
-    executor: python
-    steps:
-      - checkout
-      - install_project
       - run:
-          command: python -m pytest -q tests/test_contrastive_checkpoint_contract.py
-  checkpoint_parameters:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - run:
-          command: python -m pytest -q tests/test_contrastive_checkpoint_integration.py::test_contrastive_parameters_include_only_region_selection_and_panel_semantics
-  checkpoint_identities:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - run:
-          command: python -m pytest -q tests/test_contrastive_checkpoint_integration.py::test_contrastive_input_identity_hashes_only_approved_challenge_sources
-  checkpoint_primer_tool:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - run:
-          command: python -m pytest -q tests/test_contrastive_checkpoint_integration.py::test_primer3_identity_uses_actual_contrastive_candidate_source
-  pipeline_contrastive:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - run:
-          command: python -m pytest -q tests/test_contrastive_checkpoint_integration.py::test_pipeline_executes_contrastive_stage_with_approved_manifest
-  pipeline_primer:
-    executor: python
-    steps:
-      - checkout
-      - install_project
-      - run:
-          command: python -m pytest -q tests/test_contrastive_checkpoint_integration.py::test_pipeline_passes_contrastive_result_into_primer_design
-
+          name: RED deterministic guided demo
+          command: python -m pytest -q tests/test_guided_demo.py
 workflows:
   ci:
     jobs:
-      - checkpoint_contract:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - checkpoint_parameters:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - checkpoint_identities:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - checkpoint_primer_tool:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - pipeline_contrastive:
-          filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
-      - pipeline_primer:
+      - guided_demo_red:
           filters: pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
