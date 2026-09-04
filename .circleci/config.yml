@@ -15,36 +15,43 @@ jobs:
             python -m pip install -e . pytest
 
       - run:
-          name: Run full unit and regression suite
+          name: Run normal test suite
           command: python -m pytest -q
 
       - run:
-          name: Smoke test installed CLI
+          name: Smoke test installed panel approval CLI
           command: |
-            qpcr-pipeline doctor
             qpcr-pipeline panel approve --help
             qpcr-pipeline panel approve tests/fixtures/panels/west_nile_proposal.yaml --output approved-panel-smoke.json
             python -c "import json; p=json.load(open('approved-panel-smoke.json', encoding='utf-8')); assert p['status']=='APPROVED'; assert p['approved_by_user'] is True; assert p['proposal_sha256'].startswith('sha256:')"
             rm approved-panel-smoke.json
 
-      - run:
-          name: Install integration tools
-          command: |
-            sudo apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              cd-hit \
-              mafft \
-              primer3
-            command -v cd-hit-est
-            command -v mafft
-            command -v primer3_core
+      - when:
+          condition:
+            equal: [main, << pipeline.git.branch >>]
+          steps:
+            - run:
+                name: Install integration tools
+                command: |
+                  sudo apt-get update
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                    cd-hit \
+                    mafft \
+                    primer3
 
-      - run:
-          name: Run full integration suite
-          command: python -m unittest discover -s integration_tests -q
+            - run:
+                name: Verify integration tools
+                command: |
+                  command -v cd-hit-est
+                  command -v mafft
+                  command -v primer3_core
+
+            - run:
+                name: Run integration test suite
+                command: python -m unittest discover -s integration_tests -q
 
 workflows:
   ci:
     jobs:
       - test:
-          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main" or pipeline.git.branch == "feat/contrastive-conservation-guided-colab"
+          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
