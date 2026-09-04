@@ -18,23 +18,18 @@ jobs:
           name: Run normal test suite
           command: |
             if [ "$CIRCLE_BRANCH" = "feat/contrastive-conservation-guided-colab" ]; then
-              python -m pytest -q tests/test_execution.py
+              python -m pytest -q tests/test_contrastive_stage_contract.py tests/test_execution.py
             else
               python -m pytest -q
             fi
 
-      - when:
-          condition:
-            not:
-              equal: [feat/contrastive-conservation-guided-colab, << pipeline.git.branch >>]
-          steps:
-            - run:
-                name: Smoke test installed panel approval CLI
-                command: |
-                  qpcr-pipeline panel approve --help
-                  qpcr-pipeline panel approve tests/fixtures/panels/west_nile_proposal.yaml --output approved-panel-smoke.json
-                  python -c "import json; p=json.load(open('approved-panel-smoke.json', encoding='utf-8')); assert p['status']=='APPROVED'; assert p['approved_by_user'] is True; assert p['proposal_sha256'].startswith('sha256:')"
-                  rm approved-panel-smoke.json
+      - run:
+          name: Smoke test installed panel approval CLI
+          command: |
+            qpcr-pipeline panel approve --help
+            qpcr-pipeline panel approve tests/fixtures/panels/west_nile_proposal.yaml --output approved-panel-smoke.json
+            python -c "import json; p=json.load(open('approved-panel-smoke.json', encoding='utf-8')); assert p['status']=='APPROVED'; assert p['approved_by_user'] is True; assert p['proposal_sha256'].startswith('sha256:')"
+            rm approved-panel-smoke.json
 
       - when:
           condition:
