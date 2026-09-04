@@ -15,8 +15,8 @@ jobs:
             python -m pip install -e . pytest
 
       - run:
-          name: Run pipeline ranking and report regression subset
-          command: python -m pytest tests/test_pipeline_*.py tests/test_ranking_*.py tests/test_*report*.py -q
+          name: Run remaining regression subset
+          command: python -m pytest tests -q --ignore-glob='tests/test_pipeline_*.py' --ignore-glob='tests/test_ranking_*.py' --ignore-glob='tests/test_*report*.py'
 
       - run:
           name: Smoke test installed panel approval CLI
