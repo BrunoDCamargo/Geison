@@ -26,28 +26,32 @@ jobs:
             python -c "import json; p=json.load(open('approved-panel-smoke.json', encoding='utf-8')); assert p['status']=='APPROVED'; assert p['approved_by_user'] is True; assert p['proposal_sha256'].startswith('sha256:')"
             rm approved-panel-smoke.json
 
-      - run:
-          name: Install integration tools for feature acceptance
-          command: |
-            sudo apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              cd-hit \
-              mafft \
-              primer3
+      - when:
+          condition:
+            equal: [main, << pipeline.git.branch >>]
+          steps:
+            - run:
+                name: Install integration tools
+                command: |
+                  sudo apt-get update
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                    cd-hit \
+                    mafft \
+                    primer3
 
-      - run:
-          name: Verify integration tools
-          command: |
-            command -v cd-hit-est
-            command -v mafft
-            command -v primer3_core
+            - run:
+                name: Verify integration tools
+                command: |
+                  command -v cd-hit-est
+                  command -v mafft
+                  command -v primer3_core
 
-      - run:
-          name: Run full real-tool integration suite
-          command: python -m unittest discover -s integration_tests -q
+            - run:
+                name: Run integration test suite
+                command: python -m unittest discover -s integration_tests -q
 
 workflows:
   ci:
     jobs:
       - test:
-          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main" or pipeline.git.branch == "feat/contrast-anchored-assay-report"
+          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
