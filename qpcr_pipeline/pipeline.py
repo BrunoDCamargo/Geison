@@ -45,6 +45,7 @@ from qpcr_pipeline.primer3 import Primer3Runner
 from qpcr_pipeline.primer_design import design_primers
 from qpcr_pipeline.qc import evaluate_sequences
 from qpcr_pipeline.ranking_guard import evaluate_ranking_with_execution_guard
+from qpcr_pipeline.researcher_report import generate_researcher_report
 from qpcr_pipeline.run_recording import (
     RunRecorder,
     assess_final_completeness,
@@ -167,6 +168,7 @@ def run_pipeline(
             action_required_artifact=str(proposal_path),
         )
         _write_json_atomic(output_dir / "run_summary.json", asdict(summary))
+        _publish_researcher_report(output_dir)
         return summary
     plan = plan_pipeline(
         config,
@@ -383,6 +385,7 @@ def run_pipeline(
             reference=build_reference_provenance(alignment),
             panel_provenance=build_panel_provenance(results["panel"]),
         )
+        _publish_researcher_report(output_dir)
         return summary
     except BaseException as error:
         try:
@@ -395,6 +398,7 @@ def run_pipeline(
                 )
             except Exception:
                 pass
+        _publish_researcher_report(output_dir)
         raise
 
 
@@ -667,6 +671,27 @@ def _write_json_atomic(destination: Path, value: object) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _publish_researcher_report(output_dir: Path) -> None:
+    report_path = output_dir / "report.html"
+    error_path = output_dir / "report_error.json"
+    report_path.unlink(missing_ok=True)
+    error_path.unlink(missing_ok=True)
+    try:
+        generate_researcher_report(output_dir)
+    except Exception as error:
+        report_path.unlink(missing_ok=True)
+        try:
+            _write_json_atomic(
+                error_path,
+                {
+                    "error_type": type(error).__name__,
+                    "message": str(error)[:1000],
+                },
+            )
+        except Exception:
+            pass
 
 
 def _copy_effective_manifest(source: Path, destination: Path) -> None:
