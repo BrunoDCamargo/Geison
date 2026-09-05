@@ -28,7 +28,7 @@ jobs:
 
       - when:
           condition:
-            equal: [main, << pipeline.git.branch >>]
+            equal: [feat/guided-ncbi-panel-flow, << pipeline.git.branch >>]
           steps:
             - run:
                 name: Install integration tools
