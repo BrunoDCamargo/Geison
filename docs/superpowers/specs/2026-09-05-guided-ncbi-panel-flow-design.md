@@ -2,31 +2,40 @@
 
 ## Goal
 
-Make Geison's default Guided Colab workflow match the intended product experience: the researcher chooses a supported biological target, Geison acquires the target and challenge sequence datasets from NCBI, presents a scientific panel for explicit approval, then runs the existing assay-discovery pipeline without requiring manual FASTA download/upload or path management.
+Make Geison's default Guided Colab workflow match the intended product experience: the researcher chooses a supported biological target, Geison prepares an explicit panel proposal, then — only after approval — Geison itself acquires target and challenge sequences from NCBI and runs the existing assay-discovery pipeline. Manual FASTA download/upload and path management disappear from the default path.
 
-The existing local FASTA/GenBank workflow remains available as an advanced path.
+The current local FASTA/GenBank path remains available as an advanced workflow.
 
-## Why this change
+## Existing capability to reuse
 
-Geison already has a reproducible NCBI acquisition subsystem for target inputs (`NcbiInputConfig`, `BioEntrezClient`, `acquire_ncbi_dataset`, frozen manifests, retries and resume). The guided notebook currently bypasses it and makes `Project` mode depend on local FASTA files. Off-targets/challenges currently accept only local FASTA or an already-frozen NCBI dataset. This design connects the guided experience to the existing target acquisition capability and extends the same acquisition model to challenge datasets.
+Geison already has a mature NCBI acquisition subsystem for target inputs:
 
-This work implements the previously deferred “panel intelligence and validation” direction from the hybrid assay architecture, beginning with a small versioned arbovirus knowledge seed rather than pretending to provide a universal clinical knowledge base.
+- `NcbiInputConfig` query/accession/frozen modes;
+- `BioEntrezClient`;
+- bounded retry/backoff for HTTP 429/5xx and network failures;
+- batched acquisition;
+- resumable/frozen `dataset_manifest.json` + `records.gb`;
+- accession/version and SHA-256 provenance.
+
+The Guided Colab currently bypasses this and constructs local FASTA configuration. Off-targets currently accept local FASTA or an already-frozen NCBI dataset, so the cleanest low-risk implementation is to make Guided mode materialize challenge datasets through the same existing NCBI service and then feed the ordinary pipeline its already-supported frozen off-target sources.
+
+This restores the intended experience without changing contrast, specificity, ranking, or checkpoint semantics.
 
 ## User experience
 
 The notebook exposes three modes:
 
-1. **Guided (NCBI)** — default. User selects/types a supported target and provides the NCBI contact email required by the E-utilities integration. No FASTA paths or uploads are requested.
-2. **Demo (synthetic)** — deterministic synthetic walkthrough retained for regression/demo use.
-3. **Advanced (local sequences)** — existing bring-your-own FASTA path workflow.
+1. **Guided (NCBI)** — default. User selects/types a supported target and provides the NCBI contact email required by the existing E-utilities adapter. No FASTA paths or uploads are requested.
+2. **Demo (synthetic)** — deterministic synthetic walkthrough.
+3. **Advanced (local sequences)** — current bring-your-own-FASTA workflow.
 
-For Guided (NCBI):
+Guided flow:
 
 ```text
 Target selection
       |
       v
-Geison builds proposal from versioned panel knowledge
+Geison guided preset -> proposal config
       |
       v
 PANEL_APPROVAL_REQUIRED
@@ -38,188 +47,167 @@ User reviews target + challenge organisms + criticality
 APROVAR
       |
       v
-Target NCBI acquisition + challenge NCBI acquisition
+Geison guided finalizer
+  - validates approved panel
+  - freezes challenge datasets from NCBI
+  - writes approved pipeline config
       |
       v
-QC -> clustering/alignment -> conservation -> contrast
-      |
-      v
-primer/probe design -> inclusivity -> specificity -> ranking -> report
+qpcr-pipeline run
+  - target NCBI acquisition through existing input stage
+  - QC/alignment/conservation/contrast
+  - primer/probe design/inclusivity/specificity/ranking/report
 ```
 
-The only scientific human gate remains panel approval. Network identity configuration is not treated as scientific input.
+The only scientific human gate remains panel approval. NCBI contact identity is operational configuration, not a scientific decision.
 
 ## Supported guided knowledge
 
-The architecture is generic, but the first knowledge seed is intentionally small and explicit. It supports **West Nile virus** first because the current acceptance exercise uses WNV and the repository already contains a WNV panel fixture.
+The architecture is generic, but the first versioned knowledge seed is deliberately small. It supports **West Nile virus** first because the current acceptance exercise uses WNV and the repository already has a WNV panel fixture.
 
 Initial WNV proposal:
 
 - Target: West Nile virus, `broad_detection`.
-- CRITICAL challenge: Usutu virus — reason `phylogenetic_neighbor`.
-- CRITICAL challenge: Japanese encephalitis virus — reason `phylogenetic_neighbor`.
-- IMPORTANT challenge: Dengue virus — reason `clinical_differential`.
+- CRITICAL challenge: Usutu virus — `phylogenetic_neighbor`.
+- CRITICAL challenge: Japanese encephalitis virus — `phylogenetic_neighbor`.
+- IMPORTANT challenge: Dengue virus — `clinical_differential`.
 
-The preset also records a `knowledge_version` and `proposed_by: geison_guided_knowledge` so the panel proposal is auditable. Unsupported targets fail clearly with the supported target list instead of silently fabricating a panel.
+Every proposal records `proposed_by: geison_guided_knowledge` and a knowledge version. Unsupported targets fail clearly with the supported target list; Geison must not silently invent an authoritative panel.
 
-This is not an authoritative clinical panel. The user must approve the proposal and the report continues to state that in-silico evidence requires scientific and experimental validation.
+## NCBI query policy
 
-## NCBI queries
+Guided datasets use the existing `NcbiInputConfig` contract. Initial operational defaults for the real WNV smoke workflow are:
 
-Each guided dataset uses the existing `NcbiInputConfig` model. Queries are explicit strings and have explicit bounded `max_records` values so a Colab run cannot accidentally attempt an unbounded public-database download.
-
-Initial smoke-test defaults:
-
-- WNV target: `"West Nile virus"[Organism] AND complete genome[Title]`, `max_records: 50`.
-- Each WNV challenge: organism-specific `complete genome[Title]`, `max_records: 20`.
-- `batch_size: 20`.
+- target query: `"West Nile virus"[Organism] AND complete genome[Title]`, `max_records: 50`;
+- each challenge: organism-specific `complete genome[Title]`, `max_records: 20`;
+- `batch_size: 20`;
 - `retries: 5`.
 
-These limits are operational defaults for the guided smoke workflow, not claims that the first N records are a scientifically representative population. The generated proposal/report must identify this limitation. Future representative-selection work can replace the bounded-prefix policy without changing the acquisition contract.
+These are bounded smoke/workbench defaults, not claims that the first N results form a scientifically representative population. The guided metadata records that limitation. Future representative-selection work can replace this policy without changing the notebook UX.
 
-## NCBI policy and contact identity
+## NCBI contact identity
 
-The current production adapter requires `NCBI_EMAIL`; this remains required. The Guided notebook collects it once in setup and sets `NCBI_EMAIL` in the runtime before any approved live acquisition. `NCBI_API_KEY` remains optional and may be supplied through the environment.
+The current production adapter requires `NCBI_EMAIL`; this remains unchanged. The notebook collects the value once and exports `NCBI_EMAIL` before any live acquisition. `NCBI_API_KEY` stays optional via environment.
 
-No credentials are persisted in configuration, panel manifests, checkpoint state, reports, logs, or evidence bundles.
+No email/API key is written to YAML, panel manifests, frozen dataset manifests, reports, logs, or evidence bundles.
 
-## Configuration model
+## Guided module
 
-`OffTargetConfig` gains an optional `ncbi: NcbiInputConfig` source.
+Add `qpcr_pipeline.guided` as a deterministic, network-free knowledge/config layer.
 
-Exactly one source is allowed per off-target:
+It owns:
 
-- `fasta`
-- `frozen_dataset`
-- `ncbi`
+- versioned supported-target presets;
+- target NCBI query/config;
+- challenge NCBI query/config;
+- panel proposal metadata;
+- operational limits and explicit limitations.
 
-For off-target `ncbi`, query and accession modes are allowed. `ncbi.frozen_dataset` is rejected because the existing top-level `frozen_dataset` field is the canonical frozen representation for off-targets.
+Public interfaces:
 
-Example:
-
-```yaml
-off_targets:
-  - name: Usutu virus
-    ncbi:
-      query: '"Usutu virus"[Organism] AND complete genome[Title]'
-      batch_size: 20
-      retries: 5
-      max_records: 20
+```python
+supported_guided_targets() -> tuple[str, ...]
+build_guided_proposal_config(target_name: str) -> dict[str, object]
+finalize_guided_project(
+    target_name: str,
+    approved_panel_path: str | Path,
+    workspace: str | Path,
+    *,
+    ncbi_client: NcbiClient | None = None,
+) -> Path
 ```
 
-## Challenge acquisition stage
+`build_guided_proposal_config()` makes no network call. It creates the normal pipeline proposal config with `input.ncbi` and `contrastive_conservation.enabled: false`.
 
-Add a real checkpointed pipeline stage named `challenge_acquisition` after `qc` and before `clustering` in stage order. It materializes every configured off-target into a deterministic run-local representation.
+`finalize_guided_project()` is called only after panel approval. It:
 
-Why a stage instead of notebook-side downloads:
+1. loads and validates the approved panel manifest;
+2. verifies the approved target matches the guided preset;
+3. maps each approved CHALLENGE non-target to an explicit preset NCBI query;
+4. calls the existing `acquire_ncbi_dataset()` for each challenge under `<workspace>/guided_challenges/<NNN-slug>`;
+5. writes `<workspace>/config-approved.yaml` using ordinary `off_targets[].frozen_dataset` entries and `input.ncbi` for the target;
+6. writes a small `guided_acquisition_manifest.json` containing knowledge version, approved-panel SHA-256, dataset names, frozen paths, record counts and hashes, but no credentials.
 
-- network failures are recorded in normal run lifecycle;
-- NCBI retry/freeze behavior remains inside Geison;
-- challenge dataset composition participates in checkpoint identity;
-- resume can reuse already-materialized challenge datasets;
-- contrast and specificity consume the exact same frozen challenge evidence;
-- the notebook does not become a second acquisition implementation.
+If an approved challenge is not present in the preset, finalization fails rather than substituting or silently skipping it.
 
-### Materialization rules
+## CLI integration
 
-For each off-target, in configuration order:
+Extend the existing CLI with two non-scientific orchestration commands:
 
-- local FASTA: copy to `<outdir>/challenge_datasets/<index>-<slug>/records.fasta`;
-- external frozen NCBI dataset: validate it, then copy its `records.gb` and `dataset_manifest.json` into the run-local challenge directory;
-- live NCBI query/accessions: call the existing `acquire_ncbi_dataset` directly in the run-local challenge directory.
+```text
+qpcr-pipeline guided prepare --target "West Nile virus" --workspace <dir>
+qpcr-pipeline guided finalize --target "West Nile virus" --workspace <dir> --approved-panel <path>
+```
 
-The stage result records, per dataset:
+`guided prepare` writes `config-proposal.yaml` and prints its path.
 
-- name;
-- materialized source type (`FASTA` or `NCBI_FROZEN`);
-- run-local source path;
-- sequence count;
-- records SHA-256;
-- optional manifest SHA-256.
+`guided finalize` performs approved challenge acquisition and writes `config-approved.yaml` plus `guided_acquisition_manifest.json`.
 
-All stored paths are inside `outdir` so checkpoint codecs remain safe and portable.
+The existing commands remain responsible for scientific execution:
 
-### Downstream consumption
+```text
+qpcr-pipeline run config-proposal.yaml --outdir ...
+qpcr-pipeline panel approve panel_proposal.yaml --output approved_panel.json
+qpcr-pipeline run config-approved.yaml --outdir ... --resume
+```
 
-`contrastive_conservation` and `specificity` no longer read raw `config.off_targets` directly. They convert `ChallengeAcquisitionResult` into ordinary frozen/local `OffTargetConfig` values and pass those to the existing scientific functions unchanged.
-
-Both stages depend on `challenge_acquisition`, so a changed challenge dataset fingerprint invalidates both scientific branches and downstream ranking.
-
-## Checkpoint/provenance behavior
-
-`challenge_acquisition` parameters include the declared source mode and NCBI query/accession settings but never credentials.
-
-Input identities:
-
-- local FASTA: hash of original file;
-- external frozen NCBI: records + manifest hashes;
-- live NCBI query/accession: no pre-existing file identity; the explicit query/accession parameters are checkpoint parameters.
-
-Outputs include every run-local challenge `records.fasta` or `records.gb` plus every NCBI `dataset_manifest.json`.
-
-The result fingerprint therefore freezes the exact challenge composition for downstream stages.
-
-The top-level effective configuration retains the original user intent (`off_targets[].ncbi`) while the stage result and copied manifests retain the resolved dataset evidence.
-
-## Guided configuration builder
-
-Add a pure `qpcr_pipeline.guided` module that owns the versioned supported-target presets and creates two YAML-compatible mappings:
-
-- proposal configuration with `panel.proposal` and `contrastive_conservation.enabled: false`;
-- approved-template configuration with `panel.frozen_manifest: __APPROVED_PANEL_PATH__` and `contrastive_conservation.enabled: true`.
-
-The builder has no network calls. It is deterministic and unit-testable.
-
-The Guided notebook uses this builder rather than manually assembling the NCBI/panel dictionaries.
+The notebook never implements NCBI HTTP calls itself.
 
 ## Notebook behavior
 
-The first Python cell explicitly adds `/content/Geison` to the active kernel `sys.path` before direct helper imports. This closes the currently observed Colab editable-install path-hook issue and also makes the final evidence-bundle import reliable in the same kernel.
+The first Python cell explicitly inserts `/content/Geison` into the active kernel `sys.path`. This closes the observed Colab editable-install/path-hook issue and makes the final report/evidence-bundle helper import reliable.
 
-In Guided (NCBI) mode:
+Default Guided (NCBI) mode shows only:
 
-- no target FASTA field;
-- no challenge FASTA fields;
-- no challenge-name editing fields in the default path;
-- target is fed to `qpcr_pipeline.guided`;
-- NCBI email is exported to `os.environ["NCBI_EMAIL"]`;
-- the generated proposal is displayed before the existing approval gate;
-- after approval, the existing CLI runs the full pipeline.
+- target;
+- NCBI contact email;
+- workspace.
 
-Advanced local mode preserves the current manual fields.
+It does not show target FASTA, challenge names, challenge FASTAs, or upload instructions.
+
+The proposal and approval gate remain visible. After `APROVAR`, the notebook calls `qpcr-pipeline guided finalize`, displays the generated approved config, then resumes the normal pipeline.
+
+Advanced local mode retains the current manual fields.
+
+## Provenance and reproducibility
+
+Target NCBI provenance remains the existing pipeline-owned `ncbi_dataset_manifest.json`.
+
+Challenge provenance is preserved by the existing NCBI frozen dataset manifests created under `guided_challenges/` plus `guided_acquisition_manifest.json` linking them to the approved panel and knowledge version. The final pipeline uses those frozen paths, so contrast and specificity consume the exact same challenge files.
+
+No challenge network lookup occurs during contrast or specificity.
 
 ## Error behavior
 
-- Missing NCBI email: fail before live acquisition with a clear action message.
-- Unsupported guided target: fail before panel proposal with supported target names.
-- NCBI HTTP 429/5xx/network errors: existing bounded retry/backoff behavior applies.
-- Empty NCBI query result: acquisition fails explicitly; no empty dataset is silently accepted.
-- Missing challenge data: the challenge acquisition stage fails; contrast/specificity do not run.
-- Panel approval remains mandatory before any scientific execution or live sequence acquisition.
+- Missing `NCBI_EMAIL`: actionable failure before approved live acquisition.
+- Unsupported guided target: fail before proposal with supported targets.
+- NCBI 429/5xx/network failures: existing bounded retry/backoff applies.
+- Empty/inconsistent NCBI dataset: existing acquisition validation fails explicitly.
+- Approved challenge absent from preset: finalization fails; no silent omission.
+- Panel approval remains mandatory before challenge acquisition and scientific execution.
 
 ## Testing
 
 Offline tests cover:
 
-- off-target NCBI config parsing and mutual exclusion;
-- challenge acquisition from deterministic fake NCBI client;
-- local FASTA materialization;
-- external frozen dataset materialization;
-- challenge checkpoint codec round-trip;
-- dependency invalidation for contrast/specificity;
-- guided WNV proposal/config generation;
-- notebook contract: Guided (NCBI) is default, no manual FASTA requirement in that mode, kernel source path is inserted, and NCBI email is exported before execution;
-- full pipeline integration with fake NCBI target and challenge acquisition, proving both contrast and specificity consume the same frozen challenge stage output.
+- deterministic WNV proposal generation;
+- unsupported target behavior;
+- approved-panel mismatch/rejection;
+- challenge acquisition through a deterministic fake `NcbiClient`;
+- final approved YAML uses `input.ncbi` for target and `off_targets[].frozen_dataset` for challenges;
+- acquisition manifest contains dataset hashes/counts and no credentials;
+- CLI `guided prepare`/`guided finalize` contracts;
+- notebook contract: Guided (NCBI) default, no manual FASTA requirement in that path, NCBI email exported, kernel source path inserted, existing approval/report sections preserved.
 
-Live NCBI testing remains opt-in under `network_tests/` and must never be required by the normal test suite.
+Live NCBI testing stays opt-in under `network_tests/` and is never required by the normal suite.
 
-## Out of scope for this iteration
+## Out of scope
 
-- universal automatic clinical-panel generation for arbitrary pathogens;
+- universal panel intelligence for arbitrary pathogens;
 - literature/AI-based panel suggestions;
 - metadata-stratified representative sampling;
 - DECIPHER integration;
-- report visual-theme/contrast redesign;
-- claims of analytical or clinical validation.
+- report dark/light theme redesign;
+- analytical or clinical validation claims.
 
-These are intentionally separate from restoring the expected guided acquisition workflow.
+This iteration is specifically about restoring the intended low-intrusion guided acquisition workflow with the NCBI infrastructure Geison already has.
