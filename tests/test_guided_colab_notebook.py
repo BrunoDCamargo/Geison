@@ -45,16 +45,53 @@ def test_guided_notebook_has_researcher_facing_sections_and_cli_flow():
 
     for marker in [
         "#@param",
+        "Guided (NCBI)",
         "Demo (synthetic)",
-        "Project",
+        "Advanced (local sequences)",
         "qpcr-pipeline doctor",
         "qpcr-pipeline",
         "run",
         "panel",
         "approve",
+        "guided",
+        "prepare",
+        "finalize",
         "--resume",
     ]:
         assert marker in code
+
+
+def test_guided_notebook_defaults_to_low_intrusion_ncbi_mode():
+    _, _, code = _notebook_text()
+
+    assert 'mode = "Guided (NCBI)"' in code
+    assert 'target_name = "West Nile virus"' in code
+    assert 'os.environ["NCBI_EMAIL"]' in code
+    assert '"guided", "prepare"' in code
+    assert '"guided", "finalize"' in code
+
+    # The active kernel must see the cloned source immediately; editable install
+    # path hooks created by a shell cell are not guaranteed to affect it.
+    assert 'geison_repo = Path("/content/Geison")' in code
+    assert "sys.path.insert(0, str(geison_repo))" in code
+
+
+def test_guided_notebook_keeps_local_sequence_paths_in_advanced_mode_only():
+    _, _, code = _notebook_text()
+
+    assert 'mode == "Advanced (local sequences)"' in code
+    assert "project_target_fasta" in code
+    assert "challenge_1_fasta" in code
+    assert "challenge_2_fasta" in code
+
+    # Guided mode must be built by Geison, rather than assembling a local FASTA
+    # config in the default branch of notebook logic.
+    guided_start = code.index('mode == "Guided (NCBI)"')
+    advanced_start = code.index('mode == "Advanced (local sequences)"')
+    guided_block = code[guided_start:advanced_start]
+    assert "project_target_fasta" not in guided_block
+    assert "challenge_1_fasta" not in guided_block
+    assert "challenge_2_fasta" not in guided_block
 
 
 def test_guided_notebook_does_not_duplicate_scientific_implementation():
@@ -137,8 +174,10 @@ def test_guided_notebook_exposes_researcher_report_and_evidence_downloads():
 def test_guided_colab_guide_documents_normal_and_advanced_use():
     text = GUIDE.read_text(encoding="utf-8")
     for marker in [
+        "Guided (NCBI)",
         "Demo (synthetic)",
-        "Project",
+        "Advanced (local sequences)",
+        "NCBI_EMAIL",
         "PANEL_APPROVAL_REQUIRED",
         "APROVAR",
         "contrastive_conservation",
