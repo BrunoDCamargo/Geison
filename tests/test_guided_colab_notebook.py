@@ -134,6 +134,12 @@ def test_guided_notebook_exposes_researcher_report_and_evidence_downloads():
     assert "approved_panel_path" in code
 
 
+def test_guided_notebook_installs_geison_into_active_kernel_python():
+    _, _, code = _notebook_text()
+    assert "sys.executable" in code
+    assert "[sys.executable, \"-m\", \"pip\", \"install\"" in code
+
+
 def test_guided_colab_guide_documents_normal_and_advanced_use():
     text = GUIDE.read_text(encoding="utf-8")
     for marker in [
