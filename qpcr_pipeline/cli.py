@@ -1,10 +1,13 @@
 import argparse
 from pathlib import Path
 
+import yaml
+
 from qpcr_pipeline.config import load_config
 from qpcr_pipeline.diagnostics import EnvironmentInspector, doctor_exit_code, render_environment_report
 from qpcr_pipeline.dry_run import dry_run_pipeline
 from qpcr_pipeline.execution import ExecutionPolicy, STAGE_ORDER
+from qpcr_pipeline.guided import build_guided_proposal_config, finalize_guided_project
 from qpcr_pipeline.panel_manifest import approve_panel_proposal
 from qpcr_pipeline.pipeline import run_pipeline
 
@@ -29,6 +32,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     approve_parser.add_argument("proposal", type=Path)
     approve_parser.add_argument("--output", type=Path, required=True)
+
+    guided_parser = subparsers.add_parser(
+        "guided",
+        help="Prepare and finalize low-intrusion NCBI-backed guided projects",
+    )
+    guided_subparsers = guided_parser.add_subparsers(
+        dest="guided_command",
+        required=True,
+    )
+    prepare_parser = guided_subparsers.add_parser(
+        "prepare",
+        help="Write a guided panel proposal configuration without network access",
+    )
+    prepare_parser.add_argument("--target", required=True)
+    prepare_parser.add_argument("--workspace", type=Path, required=True)
+
+    finalize_parser = guided_subparsers.add_parser(
+        "finalize",
+        help="Freeze approved guided challenge datasets and write the approved config",
+    )
+    finalize_parser.add_argument("--target", required=True)
+    finalize_parser.add_argument("--workspace", type=Path, required=True)
+    finalize_parser.add_argument("--approved-panel", type=Path, required=True)
 
     run_parser = subparsers.add_parser(
         "run", help="Run or validate the qPCR pipeline configuration"
@@ -93,6 +119,29 @@ def main() -> int:
         manifest = approve_panel_proposal(args.proposal, args.output)
         print(f"Approved panel manifest: {args.output}")
         print(f"Proposal identity: {manifest.proposal_sha256}")
+        return 0
+
+    if args.command == "guided" and args.guided_command == "prepare":
+        args.workspace.mkdir(parents=True, exist_ok=True)
+        config_path = args.workspace / "config-proposal.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                build_guided_proposal_config(args.target),
+                sort_keys=False,
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+        print(f"Guided proposal configuration: {config_path}")
+        return 0
+
+    if args.command == "guided" and args.guided_command == "finalize":
+        config_path = finalize_guided_project(
+            args.target,
+            args.approved_panel,
+            args.workspace,
+        )
+        print(f"Guided approved configuration: {config_path}")
         return 0
 
     if args.command == "run":
