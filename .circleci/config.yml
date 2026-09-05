@@ -54,4 +54,4 @@ workflows:
   ci:
     jobs:
       - test:
-          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main"
+          filters: pipeline.git.branch == "develop" or pipeline.git.branch == "main" or pipeline.git.branch == "feat/guided-ncbi-panel-flow"
