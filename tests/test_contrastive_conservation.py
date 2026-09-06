@@ -9,6 +9,7 @@ from qpcr_pipeline.contrastive_conservation import analyze_contrastive_conservat
 from qpcr_pipeline.contrastive_similarity import RegionSimilarity
 from qpcr_pipeline.panel import DiagnosticContext, PanelDefinition, PanelNonTarget, PanelTarget, TargetGroup
 from qpcr_pipeline.panel_manifest import ApprovedPanelManifest
+from qpcr_pipeline.region_selection import is_target_eligible
 
 
 def _position(index: int, base: str) -> PositionConservation:
@@ -176,6 +177,61 @@ def test_discriminant_region_ranks_first_and_consolidates_windows(tmp_path):
     assert result.dataset_metrics_path.exists()
     assert result.candidate_regions_path.exists()
     assert result.report_path.exists()
+
+
+def test_eligible_anchor_is_not_rejected_by_variable_design_flanks(tmp_path):
+    positions = []
+    for index in range(1, 301):
+        position = _position(index, "A")
+        if index <= 100 or index > 200:
+            position = replace(
+                position,
+                major_allele_frequency=0.60,
+                entropy_bits=0.80,
+            )
+        positions.append(position)
+    conservation = ConservationResult(
+        status="COMPLETE",
+        reference_id="real-like-ref",
+        positions=tuple(positions),
+        windows=(_window(101, 200),),
+        annotations=(),
+        major_consensus="A" * 300,
+        iupac_consensus="A" * 300,
+        position_metrics_path=None,
+        window_metrics_path=None,
+        major_consensus_path=None,
+        iupac_consensus_path=None,
+        html_report_path=None,
+        report_path=Path("unused.json"),
+    )
+    config = _primer_config(
+        candidate_region_length=300,
+        min_mean_conservation=0.90,
+        min_minimum_conservation=0.70,
+        min_mean_coverage=0.90,
+        max_mean_gap_frequency=0.05,
+        max_mean_entropy_bits=0.50,
+        min_usable_fraction=0.80,
+    )
+    critical = _write_fasta(tmp_path / "critical.fasta", "critical-seq")
+
+    result = analyze_contrastive_conservation(
+        conservation,
+        _manifest(_non_target("critical", "CRITICAL")),
+        (OffTargetConfig("critical", fasta=critical),),
+        ContrastiveConservationConfig(enabled=True),
+        config,
+        tmp_path,
+        similarity_engine=_FakeEngine(),
+    )
+
+    assert result.windows[0].target_eligible is True
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0].region
+    assert (candidate.reference_start, candidate.reference_end) == (1, 300)
+    assert (candidate.peak_start, candidate.peak_end) == (101, 200)
+    assert is_target_eligible(candidate, config) is False
 
 
 def test_tsv_serialization_round_trips_control_characters_in_dataset_name(tmp_path):
