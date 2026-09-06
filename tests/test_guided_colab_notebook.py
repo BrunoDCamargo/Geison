@@ -94,6 +94,14 @@ def test_guided_notebook_keeps_local_sequence_paths_in_advanced_mode_only():
     assert "challenge_2_fasta" not in guided_block
 
 
+def test_guided_notebook_reads_scientific_completeness_from_run_manifest():
+    _, _, code = _notebook_text()
+
+    assert 'run_manifest.get("scientific_completeness", {})' in code
+    assert 'run_manifest.get("completeness", {})' not in code
+    assert "missing_evidence" in code
+
+
 def test_guided_notebook_does_not_duplicate_scientific_implementation():
     _, _, code = _notebook_text()
     for forbidden in [
