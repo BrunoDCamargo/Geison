@@ -30,7 +30,7 @@ from qpcr_pipeline.panel_manifest import ApprovedPanelManifest
 from qpcr_pipeline.region_selection import (
     CandidateRegion,
     candidate_region_from_window,
-    is_target_eligible,
+    is_window_target_eligible,
     overlap_fraction,
 )
 
@@ -161,7 +161,7 @@ def analyze_contrastive_conservation(
             window.reference_start - 1 : window.reference_end
         ]
         region = candidate_region_from_window(conservation, window, primer_config)
-        eligible = is_target_eligible(region, primer_config)
+        eligible = is_window_target_eligible(conservation, window, primer_config)
         evidence_for_window: list[DatasetWindowEvidence] = []
         for binding in bindings:
             match = engine.best_match(query, binding.dataset.records)
