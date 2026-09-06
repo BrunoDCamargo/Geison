@@ -28,7 +28,9 @@ jobs:
 
       - when:
           condition:
-            equal: [main, << pipeline.git.branch >>]
+            or:
+              - equal: [main, << pipeline.git.branch >>]
+              - equal: [fix/conservation-aware-primer3-checkpoints, << pipeline.git.branch >>]
           steps:
             - run:
                 name: Install integration tools
