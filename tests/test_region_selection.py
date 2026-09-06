@@ -10,6 +10,7 @@ from qpcr_pipeline.conservation import (
 from qpcr_pipeline.region_selection import (
     candidate_region_from_window,
     is_target_eligible,
+    is_window_target_eligible,
     overlap_fraction,
     select_conservation_candidate_regions,
 )
@@ -153,6 +154,40 @@ def test_candidate_region_metrics_and_eligibility_are_shared():
         region,
         _config(min_mean_conservation=0.99),
     ) is False
+
+
+def test_window_anchor_can_be_eligible_when_expanded_design_space_is_not():
+    positions = list(_positions(300))
+    for index in list(range(0, 100)) + list(range(200, 300)):
+        positions[index] = _position(
+            index + 1,
+            major_allele_frequency=0.60,
+            entropy_bits=0.80,
+        )
+    anchor = _window(
+        101,
+        200,
+        mean_conservation=1.0,
+        minimum_conservation=1.0,
+        mean_coverage=1.0,
+        mean_gap_frequency=0.0,
+        mean_entropy_bits=0.0,
+    )
+    result = _conservation(tuple(positions), (anchor,))
+    config = _config(
+        candidate_region_length=300,
+        min_mean_conservation=0.90,
+        min_minimum_conservation=0.70,
+        min_mean_coverage=0.90,
+        max_mean_gap_frequency=0.05,
+        max_mean_entropy_bits=0.50,
+        min_usable_fraction=0.80,
+    )
+
+    design_space = candidate_region_from_window(result, anchor, config)
+
+    assert is_target_eligible(design_space, config) is False
+    assert is_window_target_eligible(result, anchor, config) is True
 
 
 def test_overlap_fraction_uses_shorter_region_and_threshold_geometry():
