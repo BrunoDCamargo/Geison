@@ -73,7 +73,7 @@ def candidate_region_from_window(
 
 
 def is_target_eligible(region: CandidateRegion, config: PrimerDesignConfig) -> bool:
-    """Return whether a region satisfies the existing target-side policy."""
+    """Return whether a complete design region satisfies the target-side policy."""
     return (
         region.mean_conservation >= config.min_mean_conservation
         and region.minimum_conservation >= config.min_minimum_conservation
@@ -81,6 +81,35 @@ def is_target_eligible(region: CandidateRegion, config: PrimerDesignConfig) -> b
         and region.mean_gap_frequency <= config.max_mean_gap_frequency
         and region.mean_entropy_bits <= config.max_mean_entropy_bits
         and region.usable_fraction >= config.min_usable_fraction
+    )
+
+
+def is_window_target_eligible(
+    conservation: ConservationResult,
+    window: WindowConservation,
+    config: PrimerDesignConfig,
+) -> bool:
+    """Return whether the conserved anchor window satisfies target-side policy.
+
+    The window is the scientific anchor. ``candidate_region_length`` may expand
+    around it to give Primer3 design space, but variability in those flanks must
+    not retroactively make an otherwise eligible anchor ineligible.
+    """
+    reference_positions = _reference_positions(conservation)
+    _validate_conservation_input(conservation, reference_positions)
+    window_positions = reference_positions[
+        window.reference_start - 1 : window.reference_end
+    ]
+    if not window_positions:
+        return False
+    usable_fraction = _usable_length(window_positions, config) / len(window_positions)
+    return (
+        window.mean_conservation >= config.min_mean_conservation
+        and window.minimum_conservation >= config.min_minimum_conservation
+        and window.mean_coverage >= config.min_mean_coverage
+        and window.mean_gap_frequency <= config.max_mean_gap_frequency
+        and window.mean_entropy_bits <= config.max_mean_entropy_bits
+        and usable_fraction >= config.min_usable_fraction
     )
 
 
