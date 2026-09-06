@@ -28,7 +28,7 @@ jobs:
 
       - when:
           condition:
-            equal: [main, << pipeline.git.branch >>]
+            equal: [fix/real-data-candidate-eligibility, << pipeline.git.branch >>]
           steps:
             - run:
                 name: Install integration tools
