@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from . import legacy as _legacy
+from qpcr_pipeline.primer_binding_constraints import (
+    binding_site_exclusions_by_candidate,
+    inject_primer3_exclusions,
+)
 from qpcr_pipeline.region_selection import (
     CandidateRegion,
     RegionSelectionError,
@@ -219,6 +223,12 @@ def design_primers(
         config,
         require_contrast_anchor=require_contrast_anchor,
     )
+    exclusions = binding_site_exclusions_by_candidate(
+        conservation,
+        candidates,
+        config,
+    )
+    input_text = inject_primer3_exclusions(input_text, exclusions)
     if runner is None:
         runner = SubprocessPrimer3Runner()
     output_text = runner.run(input_text)

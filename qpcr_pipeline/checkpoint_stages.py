@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 import importlib.metadata
 import re
 import shutil
@@ -85,6 +86,35 @@ _REGION_SELECTION_FIELDS = (
 
 def geison_version() -> str:
     return importlib.metadata.version("geison-qpcr")
+
+
+def _source_tree_sha256(root: Path) -> str:
+    """Hash Python source paths and bytes deterministically."""
+    root = Path(root).resolve()
+    digest = hashlib.sha256()
+    paths = sorted(
+        root.rglob("*.py"),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+    for path in paths:
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return "sha256:" + digest.hexdigest()
+
+
+def geison_source_sha256() -> str:
+    return _source_tree_sha256(Path(__file__).resolve().parent)
+
+
+def geison_software_identity() -> dict[str, str]:
+    return {
+        "version": geison_version(),
+        "source_sha256": geison_source_sha256(),
+    }
 
 
 def _off_target_parameters(config: PipelineConfig) -> list[dict[str, str]]:
@@ -372,7 +402,7 @@ def stage_request(
         dependencies=dependencies,
         inputs=stage_input_identities(stage, config),
         parameters=stage_parameters(stage, config),
-        software={"geison": geison_version()},
+        software={"geison": geison_software_identity()},
         tools=stage_tool_identities(stage, config, stage_context, tool_provider),
     )
 
