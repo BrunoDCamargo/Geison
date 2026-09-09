@@ -69,6 +69,59 @@ def test_report_is_self_contained_safe_and_traceable():
     assert "pointMap" not in html
 
 
+def test_report_exposes_read_only_interactive_explorer_controls():
+    windows = (
+        ContrastWindowEvidence(
+            150, 200, 0.99, 0.95, 1.0, 0.0, 0.02, True,
+            "challenge-a", "CRITICAL", 0.12, 0.12, None, 0.87,
+        ),
+    )
+    dataset = (
+        DatasetWindowEvidence(
+            150, 200, "challenge-a", "CRITICAL", 2,
+            "seq-1", "forward", 0.12,
+        ),
+    )
+    rendered = render_contrastive_html(
+        target_name="Synthetic target",
+        reference_id="ref-1",
+        windows=windows,
+        dataset_evidence=dataset,
+        candidates=(_candidate(),),
+    )
+
+    for marker in (
+        'id="zoom-in"',
+        'id="zoom-out"',
+        'id="reset-view"',
+        'id="show-all"',
+        'id="hide-all"',
+        'id="dataset-filters"',
+        'id="candidate-detail"',
+        "const candidateRegions=",
+        "const datasetNames=",
+    ):
+        assert marker in rendered
+
+    assert 'type="range"' not in rendered
+    assert 'contenteditable="true"' not in rendered
+    assert "http://" not in rendered
+    assert "https://" not in rendered
+
+
+def test_report_defaults_to_worst_challenge_overview_and_opt_in_dataset_overlays():
+    rendered = render_contrastive_html(
+        target_name="target",
+        reference_id=None,
+        windows=(),
+        dataset_evidence=(),
+        candidates=(),
+    )
+    assert "const visibleDatasets=new Set();" in rendered
+    assert "drawOverview" in rendered
+    assert "visibleDatasets.has" in rendered
+
+
 def test_report_rendering_is_deterministic():
     html_a = render_contrastive_html(
         target_name="target",
