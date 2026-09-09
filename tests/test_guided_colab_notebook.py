@@ -76,6 +76,15 @@ def test_guided_notebook_defaults_to_low_intrusion_ncbi_mode():
     assert "sys.path.insert(0, str(geison_repo))" in code
 
 
+def test_guided_notebook_lets_researcher_choose_non_targets():
+    _, markdown, code = _notebook_text()
+
+    assert "non_target_names" in code
+    assert 'split(";")' in code
+    assert '"--non-target"' in code
+    assert "choose the target and non-target organisms" in markdown
+
+
 def test_guided_notebook_keeps_local_sequence_paths_in_advanced_mode_only():
     _, _, code = _notebook_text()
 
