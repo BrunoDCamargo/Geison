@@ -84,6 +84,22 @@ class GuidedConfigTests(unittest.TestCase):
             all("frozen_dataset" in item and "fasta" not in item for item in proposal["off_targets"])
         )
 
+    def test_researcher_can_choose_arbitrary_target_and_non_targets(self):
+        proposal = build_guided_proposal_config(
+            "West Nile virus",
+            ["Yellow fever virus", "Zika virus", "Mayaro virus"],
+        )
+
+        self.assertEqual(proposal["target"]["name"], "West Nile virus")
+        self.assertEqual(
+            [item["name"] for item in proposal["panel"]["proposal"]["non_targets"]],
+            ["Yellow fever virus", "Zika virus", "Mayaro virus"],
+        )
+        self.assertEqual(
+            [item["name"] for item in proposal["off_targets"]],
+            ["Yellow fever virus", "Zika virus", "Mayaro virus"],
+        )
+
     def test_unsupported_target_fails_without_inventing_a_panel(self):
         with self.assertRaisesRegex(ValueError, "Supported guided targets: West Nile virus"):
             build_guided_proposal_config("Unknown virus")
