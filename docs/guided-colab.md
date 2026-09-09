@@ -2,7 +2,7 @@
 
 `notebooks/geison_guided_colab.ipynb` is the researcher-facing Colab flow for Geison. Scientific computation remains in the installed `qpcr-pipeline` CLI; notebook cells collect the small amount of user input needed, invoke official Geison commands, and render published YAML, TSV, JSON, and HTML artifacts.
 
-The default experience is now **Guided (NCBI)**. A researcher selects a supported target, reviews the proposed scientific panel, approves it explicitly, and Geison acquires the target and challenge sequence datasets itself. Manual FASTA download/upload is not part of normal guided use.
+The default experience is now **Guided (NCBI)**. A researcher chooses the target and non-target organisms, reviews the proposed scientific panel, approves it explicitly, and Geison acquires the target and challenge sequence datasets itself. Manual FASTA download/upload is not part of normal guided use.
 
 The existing `notebooks/geison_colab.ipynb` remains available for lower-level operational validation.
 
@@ -10,21 +10,24 @@ The existing `notebooks/geison_colab.ipynb` remains available for lower-level op
 
 ### Guided (NCBI) — recommended
 
-The default mode starts from a target name. The first supported guided knowledge preset is **West Nile virus**.
+The default mode starts from researcher-selected organism names rather than a fixed assay panel.
 
-The user supplies only:
+The user supplies:
 
 - target name;
+- one or more non-target names, separated by semicolons in the Colab field;
 - workspace;
 - an NCBI contact email, exposed to the runtime as `NCBI_EMAIL` before live acquisition.
 
 Geison then creates the proposal configuration through:
 
 ```text
-qpcr-pipeline guided prepare
+qpcr-pipeline guided prepare --target "..." --non-target "..." --non-target "..."
 ```
 
-The WNV preset uses the existing Geison NCBI acquisition subsystem. It proposes a reviewable challenge panel containing Usutu virus (`CRITICAL`), Japanese encephalitis virus (`CRITICAL`), and Dengue virus (`IMPORTANT`). This is a versioned guided knowledge seed, not an authoritative clinical panel.
+`--non-target` is repeatable. The notebook converts the semicolon-separated field into repeated CLI arguments. The researcher-selected names become reviewable `CHALLENGE` entries in the panel; they are not hard-coded into the scientific pipeline.
+
+Geison still retains curated target knowledge where available, such as the existing West Nile virus target query and historical challenge suggestions, but that knowledge no longer restricts the panel chosen in Guided mode.
 
 The target is configured through `input.ncbi`; no target FASTA path is required. Before approval, challenge entries use only future frozen-dataset locations, so the panel proposal can be reviewed without downloading biological sequences.
 
@@ -34,7 +37,9 @@ After explicit approval, the notebook runs:
 qpcr-pipeline guided finalize
 ```
 
-The finalizer uses Geison's existing NCBI acquisition code to download and freeze the approved challenge datasets under the workspace. It then writes a normal `config-approved.yaml` whose off-targets point to those frozen datasets. Contrast and specificity therefore consume the same immutable challenge evidence.
+The finalizer reads the approved panel itself, resolves every approved `CHALLENGE` organism through Geison's NCBI acquisition layer, downloads and freezes those challenge datasets under the workspace, and writes a normal `config-approved.yaml` whose off-targets point to the frozen datasets. Contrast and specificity therefore consume the same immutable challenge evidence.
+
+For researcher-selected organisms without a curated query, Guided mode builds an NCBI organism query that accepts records titled either `complete genome` or `complete sequence`. This keeps the acquisition generic while allowing segmented organisms to contribute complete segment records. The current workbench still requires scientific review of what the query retrieved.
 
 The current Guided workbench deliberately caps NCBI records to keep the Colab run bounded. Those caps are operational smoke/workbench limits and must not be interpreted as a representative-sampling strategy. Representative selection across lineage, geography, time, host, quality, and metadata remains separate scientific work.
 
