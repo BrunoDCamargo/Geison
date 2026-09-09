@@ -8,7 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Mapping
+from typing import Iterable, Mapping
 
 import yaml
 
@@ -73,20 +73,83 @@ _PRESETS: Mapping[str, GuidedTargetPreset] = {
 
 
 def supported_guided_targets() -> tuple[str, ...]:
-    """Return canonical targets with curated guided panel knowledge."""
+    """Return targets with optional curated guided suggestions."""
     return tuple(preset.name for preset in _PRESETS.values())
 
 
+def _clean_name(value: str, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be a non-blank string.")
+    name = value.strip()
+    if '"' in name or any(ord(char) < 32 for char in name):
+        raise ValueError(f"{label} contains unsupported characters.")
+    return name
+
+
 def _preset(target_name: str) -> GuidedTargetPreset:
-    if not isinstance(target_name, str) or not target_name.strip():
-        raise ValueError("Guided target must be a non-blank string.")
-    preset = _PRESETS.get(target_name.strip().casefold())
+    target = _clean_name(target_name, "Guided target")
+    preset = _PRESETS.get(target.casefold())
     if preset is None:
         supported = ", ".join(supported_guided_targets())
         raise ValueError(
             f"Unsupported guided target {target_name!r}. Supported guided targets: {supported}."
         )
     return preset
+
+
+def _organism_query(name: str) -> str:
+    return f'"{name}"[Organism] AND (complete genome[Title] OR complete sequence[Title])'
+
+
+def _researcher_challenges(names: Iterable[str]) -> tuple[GuidedChallengePreset, ...]:
+    challenges: list[GuidedChallengePreset] = []
+    seen: set[str] = set()
+    for raw_name in names:
+        name = _clean_name(raw_name, "Guided non-target")
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        challenges.append(
+            GuidedChallengePreset(
+                name=name,
+                criticality="IMPORTANT",
+                reason="researcher_selected",
+                query=_organism_query(name),
+            )
+        )
+    if not challenges:
+        raise ValueError("Guided mode requires at least one non-target.")
+    return tuple(challenges)
+
+
+def _target_details(
+    target_name: str,
+    non_targets: Iterable[str] | None,
+) -> tuple[str, str, int, tuple[GuidedChallengePreset, ...], str | None, str | None, list[str]]:
+    if non_targets is None:
+        preset = _preset(target_name)
+        return (
+            preset.name,
+            preset.query,
+            preset.max_records,
+            preset.challenges,
+            preset.syndrome,
+            preset.vector,
+            [_source_marker()],
+        )
+
+    target = _clean_name(target_name, "Guided target")
+    preset = _PRESETS.get(target.casefold())
+    return (
+        preset.name if preset else target,
+        preset.query if preset else _organism_query(target),
+        preset.max_records if preset else 50,
+        _researcher_challenges(non_targets),
+        preset.syndrome if preset else None,
+        preset.vector if preset else None,
+        ["researcher_selected"],
+    )
 
 
 def _slug(value: str) -> str:
@@ -111,11 +174,15 @@ def _ncbi_mapping(query: str, max_records: int) -> dict[str, object]:
     }
 
 
-def build_guided_proposal_config(target_name: str) -> dict[str, object]:
+def build_guided_proposal_config(
+    target_name: str,
+    non_targets: Iterable[str] | None = None,
+) -> dict[str, object]:
     """Build a normal pipeline proposal configuration without network access."""
-    preset = _preset(target_name)
-    proposed_by = [_source_marker()]
-    non_targets = [
+    target, target_query, target_max_records, challenges, syndrome, vector, proposed_by = (
+        _target_details(target_name, non_targets)
+    )
+    non_target_rows = [
         {
             "name": challenge.name,
             "taxid": None,
@@ -125,18 +192,18 @@ def build_guided_proposal_config(target_name: str) -> dict[str, object]:
             "proposed_by": proposed_by,
             "sequence_selection": [],
         }
-        for challenge in preset.challenges
+        for challenge in challenges
     ]
     off_targets = [
         {
             "name": challenge.name,
             "frozen_dataset": _challenge_relative_path(index, challenge),
         }
-        for index, challenge in enumerate(preset.challenges, 1)
+        for index, challenge in enumerate(challenges, 1)
     ]
     return {
-        "target": {"name": preset.name},
-        "input": {"ncbi": _ncbi_mapping(preset.query, preset.max_records)},
+        "target": {"name": target},
+        "input": {"ncbi": _ncbi_mapping(target_query, target_max_records)},
         "alignment": {"enabled": True, "threads": 2},
         "conservation": {"enabled": True, "window_size": 100, "step_size": 20},
         "primer_design": {
@@ -151,7 +218,7 @@ def build_guided_proposal_config(target_name: str) -> dict[str, object]:
         "panel": {
             "proposal": {
                 "target": {
-                    "name": preset.name,
+                    "name": target,
                     "taxid": None,
                     "mode": "broad_detection",
                     "subtype": None,
@@ -166,12 +233,12 @@ def build_guided_proposal_config(target_name: str) -> dict[str, object]:
                         }
                     ],
                 },
-                "non_targets": non_targets,
+                "non_targets": non_target_rows,
                 "diagnostic_context": {
-                    "syndrome": preset.syndrome,
+                    "syndrome": syndrome,
                     "geography": None,
                     "sample_type": None,
-                    "vector": preset.vector,
+                    "vector": vector,
                 },
             }
         },
@@ -179,28 +246,38 @@ def build_guided_proposal_config(target_name: str) -> dict[str, object]:
     }
 
 
+def _challenge_for_name(target_name: str, challenge_name: str) -> GuidedChallengePreset:
+    preset = _PRESETS.get(target_name.strip().casefold())
+    if preset is not None:
+        by_name = {challenge.name.casefold(): challenge for challenge in preset.challenges}
+        known = by_name.get(challenge_name.casefold())
+        if known is not None:
+            return known
+    return GuidedChallengePreset(
+        name=challenge_name,
+        criticality="IMPORTANT",
+        reason="researcher_selected",
+        query=_organism_query(challenge_name),
+    )
+
+
 def _approved_challenge_presets(
-    preset: GuidedTargetPreset,
+    target_name: str,
     approved_panel_path: Path,
 ) -> tuple[tuple[object, GuidedChallengePreset], ...]:
+    target = _clean_name(target_name, "Guided target")
     manifest = load_approved_panel_manifest(approved_panel_path)
-    if manifest.definition.target.name.strip().casefold() != preset.name.casefold():
+    if manifest.definition.target.name.strip().casefold() != target.casefold():
         raise ValueError(
             f"Approved panel target {manifest.definition.target.name!r} does not match "
-            f"guided target {preset.name!r}."
+            f"guided target {target!r}."
         )
-    by_name = {challenge.name.casefold(): challenge for challenge in preset.challenges}
     selected: list[tuple[object, GuidedChallengePreset]] = []
     for item in manifest.definition.non_targets:
         if "CHALLENGE" not in item.dataset_roles:
             continue
-        challenge = by_name.get(item.name.strip().casefold())
-        if challenge is None:
-            raise ValueError(
-                f"Approved challenge {item.name!r} is not available in guided knowledge "
-                f"version {KNOWLEDGE_VERSION}."
-            )
-        selected.append((item, challenge))
+        name = _clean_name(item.name, "Approved guided challenge")
+        selected.append((item, _challenge_for_name(target, name)))
     if not selected:
         raise ValueError("Approved guided panel must contain at least one CHALLENGE non-target.")
     return tuple(selected)
@@ -231,11 +308,11 @@ def finalize_guided_project(
     ncbi_client: NcbiClient | None = None,
 ) -> Path:
     """Freeze approved guided challenge data and write a standard run config."""
-    preset = _preset(target_name)
+    target = _clean_name(target_name, "Guided target")
     approved_path = Path(approved_panel_path).resolve()
     project_dir = Path(workspace).resolve()
     project_dir.mkdir(parents=True, exist_ok=True)
-    selected = _approved_challenge_presets(preset, approved_path)
+    selected = _approved_challenge_presets(target, approved_path)
 
     challenge_root = project_dir / "guided_challenges"
     challenge_root.mkdir(parents=True, exist_ok=True)
@@ -275,7 +352,9 @@ def finalize_guided_project(
         if acquired.records_path != dataset_dir / "records.gb":
             raise ValueError("Guided challenge acquisition returned an unexpected records path.")
 
-    approved_config = deepcopy(build_guided_proposal_config(preset.name))
+    approved_config = deepcopy(
+        build_guided_proposal_config(target, [challenge.name for _, challenge in selected])
+    )
     approved_config["panel"] = {"frozen_manifest": str(approved_path)}
     approved_config["contrastive_conservation"] = {"enabled": True}
     approved_config["off_targets"] = off_targets
@@ -289,7 +368,7 @@ def finalize_guided_project(
     acquisition_manifest = {
         "schema_version": 1,
         "knowledge_version": KNOWLEDGE_VERSION,
-        "target": preset.name,
+        "target": target,
         "approved_panel_sha256": hashlib.sha256(approved_path.read_bytes()).hexdigest(),
         "datasets": acquisition_rows,
         "limitations": [
