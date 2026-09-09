@@ -46,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write a guided panel proposal configuration without network access",
     )
     prepare_parser.add_argument("--target", required=True)
+    prepare_parser.add_argument(
+        "--non-target",
+        action="append",
+        dest="non_targets",
+        help="Researcher-selected non-target organism; repeat for additional organisms",
+    )
     prepare_parser.add_argument("--workspace", type=Path, required=True)
 
     finalize_parser = guided_subparsers.add_parser(
@@ -126,7 +132,7 @@ def main() -> int:
         config_path = args.workspace / "config-proposal.yaml"
         config_path.write_text(
             yaml.safe_dump(
-                build_guided_proposal_config(args.target),
+                build_guided_proposal_config(args.target, args.non_targets),
                 sort_keys=False,
                 allow_unicode=True,
             ),
