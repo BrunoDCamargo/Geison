@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 class PipelineCliTests(unittest.TestCase):
     def _executable(self):
@@ -40,6 +42,37 @@ class PipelineCliTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("synthetic-target", result.stdout)
+
+    def test_guided_prepare_accepts_repeated_non_targets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run(
+                [
+                    self._executable(),
+                    "guided",
+                    "prepare",
+                    "--target",
+                    "West Nile virus",
+                    "--non-target",
+                    "Yellow fever virus",
+                    "--non-target",
+                    "Zika virus",
+                    "--workspace",
+                    tmpdir,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            proposal = yaml.safe_load(
+                (Path(tmpdir) / "config-proposal.yaml").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            [item["name"] for item in proposal["panel"]["proposal"]["non_targets"]],
+            ["Yellow fever virus", "Zika virus"],
+        )
 
     def test_doctor_command_runs_without_configuration(self):
         result = subprocess.run(
