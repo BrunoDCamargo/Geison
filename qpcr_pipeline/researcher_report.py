@@ -238,7 +238,7 @@ def generate_researcher_report(output_dir: Path) -> Path:
     """Render and atomically publish the final researcher-facing HTML report."""
     root = Path(output_dir)
     data = load_researcher_report_data(root)
-    from qpcr_pipeline.researcher_report_html import render_researcher_report_html
+    from qpcr_pipeline.researcher_report_evidence import render_researcher_report_html
 
     html = render_researcher_report_html(data)
     destination = root / "report.html"
