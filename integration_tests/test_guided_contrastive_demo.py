@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from qpcr_pipeline.evidence_bundle import create_evidence_bundle
+from qpcr_pipeline.researcher_report import generate_researcher_report
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -193,14 +195,25 @@ class GuidedContrastiveDemoIntegrationTest(unittest.TestCase):
             report_path = output / "report.html"
             self.assertTrue(report_path.is_file())
             report_html = report_path.read_text(encoding="utf-8")
-            self.assertIn("Geison Researcher Report", report_html)
-            if "IN SILICO PASS" in classifications:
-                self.assertIn("In-silico candidate(s) identified", report_html)
-            else:
-                self.assertIn(
-                    "No in-silico pass; candidate(s) require review",
-                    report_html,
-                )
+            # The final UI now exposes observations; legacy ranking JSON remains unchanged.
+            for heading in ("Geison Evidence Report", "Target compatibility by assay",
+                            "Non-target window heatmap", "Recorded non-target correspondences"):
+                self.assertIn(heading, report_html)
+            for verdict in ("Scientific outcome", "Recommended in-silico candidate",
+                            "Final score", "No in-silico acceptable assay candidates identified"):
+                self.assertNotIn(verdict, report_html)
+
+            evidence_paths = sorted(
+                path for path in output.rglob("*") if path.suffix in {".json", ".tsv"}
+            )
+            before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in evidence_paths}
+            self.assertEqual(generate_researcher_report(output), report_path)
+            self.assertEqual(report_path.read_text(encoding="utf-8"), report_html)
+            self.assertEqual(
+                {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in evidence_paths},
+                before,
+                "Regenerating the presentation must not rewrite scientific artifacts",
+            )
 
             bundle = create_evidence_bundle(
                 output,

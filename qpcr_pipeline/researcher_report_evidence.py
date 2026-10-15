@@ -238,6 +238,14 @@ def _specificity(data: ResearcherReportData) -> str:
             ('Dataset', 'Assay', 'Role', 'Total hits', 'Retained', 'Truncated'), (
                 tuple(r.get(k) for k in ('dataset_name', 'assay_id', 'role', 'total_hit_count', 'retained_hit_count', 'truncated'))
                 for r in _rows(report.get('retention'))))
+        content += '<h3>Retained oligo correspondences</h3>' + _table(
+            ('Dataset', 'Assay', 'Sequence', 'Role', 'Orientation', 'Coordinates',
+             'Mismatch positions', 'Mismatch count', '3-prime mismatch', 'Compatible under recorded rules'), (
+                (r.get('dataset_name'), r.get('assay_id'), r.get('sequence_id'), r.get('role'),
+                 r.get('orientation'), _span(r, 'source_start', 'source_end'),
+                 r.get('mismatch_positions'), r.get('mismatch_count'),
+                 r.get('three_prime_mismatch'), r.get('compatible'))
+                for r in data.specificity_hits))
         content += _table(('Dataset', 'Assay', 'Sequence', 'Coordinates', 'Size'), (
             (r.get('dataset_name'), r.get('assay_id'), r.get('sequence_id'), _span(r, 'source_start', 'source_end'), r.get('amplicon_size'))
             for r in data.specificity_amplicons)) + '</details>'
@@ -252,9 +260,13 @@ def render_researcher_report_html(data: ResearcherReportData) -> str:
     observations = assay_observations(data)
     manifest = data.run_manifest
     target = manifest.get('target_name') or _obj(_obj(_obj(data.panel).get('definition')).get('target')).get('name')
+    design_rows = _obj(data.primer_design).get('assays')
+    candidate_count = (len(design_rows) if _complete(data.primer_design)
+                       and isinstance(design_rows, (list, tuple))
+                       else len(observations) if observations else None)
     summary = '<section class="summary"><h2>Evidence summary</h2>' + _table(
         ('Technical run status', 'Recorded target sequences', 'Candidate identifiers'), [
-            (manifest.get('status'), _obj(data.run_summary).get('sequence_count'), len(observations) if observations else None)])
+            (manifest.get('status'), _obj(data.run_summary).get('sequence_count'), candidate_count)])
     summary += '<p>No scientific acceptance or experimental performance is inferred from the execution status.</p>'
     missing = _obj(manifest.get('scientific_completeness')).get('missing_evidence')
     if missing:
@@ -266,7 +278,7 @@ def render_researcher_report_html(data: ResearcherReportData) -> str:
     audit += '<details><summary>Recorded rule codes and supporting values</summary>' + _table(
         ('Assay', 'Code', 'Source', 'Recorded evidence'), (
             (assay.get('assay_id'), r.get('code'), r.get('source'), r.get('evidence'))
-            for assay in _rows(_obj(data.ranking).get('assays'))
+            for assay in (_rows(_obj(data.ranking).get('assays')) if _complete(data.ranking) else [])
             for r in _rows(assay.get('reasons')))) + '</details></section>'
     provenance = '<section><h2>Reproducibility</h2>' + _table(('Run ID', 'Created', 'Updated', 'Reference'), [
         (manifest.get('run_id'), manifest.get('created_at'), manifest.get('updated_at'), _obj(manifest.get('reference')).get('id'))])
@@ -284,6 +296,7 @@ h2{font-size:1.4rem}h3{font-size:1.05rem}section{margin:32px 0}header{border-bot
 figure svg{width:100%;height:auto}svg text{font:12px system-ui,sans-serif;fill:#304454}table{border-collapse:collapse;width:100%;font-size:.86rem}
 th,td{padding:9px;text-align:left;border-bottom:1px solid #dbe3eb;vertical-align:top}th{background:#f5f8fa}
 .scroll{overflow:auto;max-height:480px;border:1px solid #dbe3eb}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f8fa;padding:12px;font-size:.8rem}
+code{overflow-wrap:anywhere}
 .muted{font-size:.86rem;color:#4c6275}.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:.86rem}
 details{border:1px solid #dbe3eb;border-radius:6px;padding:10px;margin:12px 0}summary{cursor:pointer;font-weight:600}
 :focus-visible{outline:3px solid #267ba5;outline-offset:3px}footer{border-top:1px solid #dbe3eb;padding-top:16px;color:#4c6275}

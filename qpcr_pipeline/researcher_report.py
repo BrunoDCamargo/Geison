@@ -59,9 +59,15 @@ def _load_json_object(
     return payload
 
 
-def _coerce_tsv_scalar(value: str | None) -> object:
+def _coerce_tsv_scalar(value: str | None, *, column: str = "") -> object:
     if value is None or value == "":
         return None
+    # Identifiers and serialized position lists are text, even when they look numeric.
+    if column.endswith("_id") or column in {
+        "dataset_name", "role", "orientation", "mismatch_positions",
+        "probe_source_sites", "probe_hit_ranks",
+    }:
+        return value
     lowered = value.casefold()
     if lowered == "true":
         return True
@@ -93,7 +99,7 @@ def _load_tsv_rows(
                 )
             return tuple(
                 {
-                    str(key): _coerce_tsv_scalar(value)
+                    str(key): _coerce_tsv_scalar(value, column=str(key))
                     for key, value in row.items()
                     if key is not None
                 }

@@ -66,20 +66,38 @@ that every report or engine in the repository has changed.
 #31, #33, #34 and the unresolved scientific-engine findings remain separate work.
 No biological benchmark or experimental validation is implied by renderer tests.
 
-## Verification for this change
+## Verification
+
+The full offline suite runs with `python -m pytest -q`. Integration tests run
+with `python -m unittest discover -s integration_tests -q` after installing
+CD-HIT, MAFFT and Primer3. They use deterministic synthetic fixtures, not
+researcher data. The guided integration test checks the default evidence
+presentation and verifies that regenerating HTML leaves JSON/TSV bytes unchanged.
+
+Optional browser tests require Playwright and Chromium:
 
 ```bash
-python -m pytest tests/test_evidence_report.py tests/test_evidence_edge_cases.py tests/test_evidence_population.py -q
+python -m pip install playwright
+python -m playwright install --with-deps chromium
+python -m unittest discover -s browser_tests -q
 ```
 
-Observed in the available partial checkout: 37 passed, 12 subtests passed.
-The repository could not be cloned in the execution environment. The existing
-report-model source was checked against Git blob
-`64b4440167bf64b114fb320dd38c40601cc48336` before its import-only change.
-The full repository regression suite and pipeline E2E have not run locally.
+`GEISON_CHROMIUM_EXECUTABLE` can select an existing Chromium executable.
+The tests load generated HTML into the browser DOM, check desktop and mobile
+layout, and reject page errors or remote requests. No browser policy is changed.
 
-Synthetic preview SVGs were rendered and inspected. Browser-level HTML layout
-verification was not completed because the installed Chromium blocked local-file
-navigation by administrator policy; that policy was not altered. The PR must
-remain draft until full regression and review, including browser layout checks.
+The `Geison verification` GitHub Actions workflow runs the offline suite,
+integration tests and browser tests before merge, and again on pushes to main.
+Logs and the exact tested revision are stored as seven-day artifacts. CircleCI
+remains configured for its existing main/develop jobs. Network-dataset tests are
+not part of these offline jobs; biological benchmarks remain in #34.
+
+The initial partial-checkout verification covered 37 tests only. A subsequent
+full-source run covered 737 tests and exposed an integration assertion for the
+superseded verdict UI. The migration updates that assertion to the descriptive
+contract and adds regressions for known-zero versus missing counts, retained
+correspondences, stale rule evidence and text identifiers in TSV input.
+The current PR check results, rather than these historical counts, govern merge.
+
+The author performed a separate self-review; no independent review is claimed.
 No uploaded researcher report or its sequences were added to repository fixtures.
